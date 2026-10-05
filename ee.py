@@ -1,37 +1,334 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fixer.py
-========
-Adds the GitHub Actions workflow (.github/workflows/build.yml) to the
-repository and makes sure everything the workflow needs is in place.
+fixer.py — Full repair
+======================
+Converts the flat JAR-extracted layout into a proper Maven project and
+makes the GitHub Actions workflow fail loudly if the JAR ends up empty.
 
-What it does
-------------
-1. Creates .github/workflows/build.yml
-2. Copies pom.xml from META-INF/maven/<group>/<artifact>/pom.xml to the
-   repo root, if it isn't there yet (GitHub Actions needs a root pom.xml)
-3. Detects whether sources are in a Maven layout (src/main/java) or the
-   flat JAR-extracted layout (com/ at the root) and warns accordingly.
+Run from the repo root (the folder that contains `com/`, `plugin.yml`,
+`config.yml`, `messages.yml`, `names.yml`):
 
-Run from the repo root, then:
-
+    python fixer.py
     git add -A
-    git commit -m "ci: add GitHub Actions build workflow"
+    git commit -m "fix: proper Maven layout + verified build"
     git push
 """
 
 import os
+import re
 import shutil
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
+
+# ===========================================================================
+#  Paths
+# ===========================================================================
+
+JAVA_SRC      = os.path.join(ROOT, "com")
+JAVA_DST_DIR  = os.path.join(ROOT, "src", "main", "java")
+JAVA_DST      = os.path.join(JAVA_DST_DIR, "com")
+
+RES_DST       = os.path.join(ROOT, "src", "main", "resources")
+RES_FILES     = ["plugin.yml", "config.yml", "messages.yml", "names.yml"]
+
+META_DIR      = os.path.join(ROOT, "META-INF")
+POM_ROOT      = os.path.join(ROOT, "pom.xml")
+GITIGNORE     = os.path.join(ROOT, ".gitignore")
 WORKFLOW_DIR  = os.path.join(ROOT, ".github", "workflows")
 WORKFLOW_FILE = os.path.join(WORKFLOW_DIR, "build.yml")
 
 
 # ===========================================================================
-#  Workflow definition
+#  Helpers
+# ===========================================================================
+
+def log(msg):
+    print("[fixer] " + msg)
+
+
+def warn(msg):
+    print("[fixer] WARNING: " + msg)
+
+
+def read(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+def write(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(content)
+
+
+def rmtree(path):
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+
+
+# ===========================================================================
+#  STEP 1 — move com/ -> src/main/java/com/
+# ===========================================================================
+
+def move_java_sources():
+    if not os.path.isdir(JAVA_SRC):
+        if os.path.isdir(JAVA_DST):
+            log("java sources already in src/main/java/com/ — skipping")
+            return
+        warn("no com/ folder found — nothing to move")
+        return
+
+    os.makedirs(JAVA_DST_DIR, exist_ok=True)
+    if os.path.exists(JAVA_DST):
+        rmtree(JAVA_DST)
+
+    shutil.move(JAVA_SRC, JAVA_DST)
+    log("moved  com/  ->  src/main/java/com/")
+
+
+# ===========================================================================
+#  STEP 2 — move yml resources
+# ===========================================================================
+
+def move_resources():
+    os.makedirs(RES_DST, exist_ok=True)
+    moved = 0
+    for name in RES_FILES:
+        src = os.path.join(ROOT, name)
+        if not os.path.isfile(src):
+            continue
+        shutil.move(src, os.path.join(RES_DST, name))
+        log("moved  %s  ->  src/main/resources/%s" % (name, name))
+        moved += 1
+    if moved == 0:
+        log("no resources to move (they're already in src/main/resources/)")
+
+
+# ===========================================================================
+#  STEP 3 — drop META-INF (jd-gui junk)
+# ===========================================================================
+
+def drop_meta_inf():
+    if os.path.isdir(META_DIR):
+        rmtree(META_DIR)
+        log("removed META-INF/")
+
+
+# ===========================================================================
+#  STEP 4 — drop target/ so we start clean
+# ===========================================================================
+
+def clean_target():
+    rmtree(os.path.join(ROOT, "target"))
+    log("removed old target/")
+
+
+# ===========================================================================
+#  STEP 5 — write proper pom.xml
+# ===========================================================================
+
+POM_XML = r'''<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.yourname</groupId>
+    <artifactId>nicksystem</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>NickSystem</name>
+    <description>Nickname system for Spigot/Paper 1.8.8 (built for JDK 8+).</description>
+
+    <properties>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
+        <maven.compiler.release>8</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <spigot.version>1.8.8-R0.1-SNAPSHOT</spigot.version>
+        <placeholderapi.version>2.11.5</placeholderapi.version>
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>spigot-repo</id>
+            <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+        </repository>
+        <repository>
+            <id>md-5-repo</id>
+            <url>https://repo.md-5.net/content/groups/public/</url>
+        </repository>
+        <repository>
+            <id>codemc-repo</id>
+            <url>https://repo.codemc.io/repository/maven-public/</url>
+        </repository>
+        <repository>
+            <id>placeholderapi</id>
+            <url>https://repo.extendedclip.com/content/repositories/placeholderapi/</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.spigotmc</groupId>
+            <artifactId>spigot-api</artifactId>
+            <version>${spigot.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>me.clip</groupId>
+            <artifactId>placeholderapi</artifactId>
+            <version>${placeholderapi.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Bundled at runtime -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.44.1.0</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>8.0.33</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.10.1</version>
+            <scope>compile</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>${project.name}-${project.version}</finalName>
+
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>plugin.yml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>plugin.yml</exclude>
+                </excludes>
+            </resource>
+        </resources>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>1.8</source>
+                    <target>1.8</target>
+                    <release>8</release>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/MANIFEST.MF</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+'''
+
+
+def write_pom():
+    if os.path.isfile(POM_ROOT):
+        existing = read(POM_ROOT)
+        # already a real pom (not the tiny META-INF one)?
+        if "<build>" in existing and "<dependencies>" in existing:
+            log("pom.xml already looks valid — leaving it alone")
+            return
+        log("overwriting invalid pom.xml")
+    write(POM_ROOT, POM_XML)
+    log("wrote proper pom.xml at repo root")
+
+
+# ===========================================================================
+#  STEP 6 — .gitignore
+# ===========================================================================
+
+GITIGNORE_CONTENT = r'''# Build output
+target/
+*.jar
+!lib/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime files the plugin generates
+nick.db
+skincache/
+logs/
+
+# Python helper (safe to keep the file, ignore pycache)
+__pycache__/
+*.pyc
+'''
+
+
+def write_gitignore():
+    if os.path.isfile(GITIGNORE):
+        existing = read(GITIGNORE)
+        if "target/" in existing:
+            log(".gitignore already covers target/ — leaving it")
+            return
+    write(GITIGNORE, GITIGNORE_CONTENT)
+    log("wrote .gitignore")
+
+
+# ===========================================================================
+#  STEP 7 — workflow with verification step
 # ===========================================================================
 
 BUILD_YML = r'''name: Build NickSystem
@@ -97,11 +394,38 @@ jobs:
           </settings>
           EOF
 
+      - name: Show project layout
+        run: |
+          echo "=== repo root ==="
+          ls -la
+          echo "=== src/main/java ==="
+          find src/main/java -maxdepth 4 -type d || true
+          echo "=== src/main/resources ==="
+          ls -la src/main/resources || true
+
       - name: Build with Maven
         run: mvn -B --no-transfer-progress clean package
 
-      - name: Show target contents
-        run: ls -la target/
+      - name: Verify JAR contents (fail if empty)
+        run: |
+          set -e
+          JAR=$(ls target/NickSystem-*.jar | head -n1)
+          SIZE=$(stat -c%s "$JAR")
+          CLASSES=$(unzip -l "$JAR" | grep -c '\.class$' || true)
+          echo "JAR:     $JAR"
+          echo "Size:    $SIZE bytes"
+          echo "Classes: $CLASSES"
+          if [ "$SIZE" -lt 20000 ]; then
+            echo "::error::JAR is suspiciously small ($SIZE bytes). Sources were likely not compiled."
+            unzip -l "$JAR"
+            exit 1
+          fi
+          if [ "$CLASSES" -lt 10 ]; then
+            echo "::error::Only $CLASSES .class files found — sources are missing from src/main/java."
+            unzip -l "$JAR"
+            exit 1
+          fi
+          echo "OK: JAR contains $CLASSES classes, $SIZE bytes."
 
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
@@ -134,108 +458,65 @@ jobs:
 '''
 
 
-# ===========================================================================
-#  Helpers
-# ===========================================================================
-
-def ensure_dir(path):
-    if not os.path.isdir(path):
-        os.makedirs(path)
-
-
-def write_file(path, content):
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(content)
+def write_workflow():
+    os.makedirs(WORKFLOW_DIR, exist_ok=True)
+    write(WORKFLOW_FILE, BUILD_YML)
+    log("wrote .github/workflows/build.yml (with JAR verification)")
 
 
 # ===========================================================================
-#  Step 1 - write the workflow file
+#  STEP 8 — post-check
 # ===========================================================================
 
-def add_workflow():
-    ensure_dir(WORKFLOW_DIR)
-    write_file(WORKFLOW_FILE, BUILD_YML)
-    print("[fixer] created .github/workflows/build.yml")
+def sanity_check():
+    print("=" * 60)
+    print("[fixer] Sanity check")
+    print("=" * 60)
 
+    java_dir = os.path.join(ROOT, "src", "main", "java", "com")
+    if not os.path.isdir(java_dir):
+        warn("src/main/java/com/  NOT found — sources are still flat!")
+    else:
+        count = 0
+        for dirpath, _dirnames, filenames in os.walk(java_dir):
+            count += sum(1 for f in filenames if f.endswith(".java"))
+        log("src/main/java/com/ contains %d .java files" % count)
 
-# ===========================================================================
-#  Step 2 - make sure pom.xml is at the repo root
-# ===========================================================================
+    res_dir = os.path.join(ROOT, "src", "main", "resources")
+    if not os.path.isdir(res_dir):
+        warn("src/main/resources/ NOT found")
+    else:
+        for name in RES_FILES:
+            marker = "OK " if os.path.isfile(os.path.join(res_dir, name)) else "MISS"
+            log("  [%s] src/main/resources/%s" % (marker, name))
 
-def ensure_root_pom():
-    root_pom = os.path.join(ROOT, "pom.xml")
-    if os.path.isfile(root_pom):
-        print("[fixer] pom.xml already present at repo root")
-        return True
-
-    # Look for the pom that jd-gui put inside META-INF/maven/...
-    meta_maven = os.path.join(ROOT, "META-INF", "maven")
-    if os.path.isdir(meta_maven):
-        for group in os.listdir(meta_maven):
-            group_dir = os.path.join(meta_maven, group)
-            if not os.path.isdir(group_dir):
-                continue
-            for artifact in os.listdir(group_dir):
-                candidate = os.path.join(group_dir, artifact, "pom.xml")
-                if os.path.isfile(candidate):
-                    shutil.copyfile(candidate, root_pom)
-                    print("[fixer] copied pom.xml from META-INF/maven/... to root")
-                    return True
-
-    print("[fixer] WARNING: no pom.xml found. The workflow will fail.")
-    print("[fixer]          Create a proper pom.xml at the repo root first")
-    print("[fixer]          (see the project's instructions).")
-    return False
+    log("pom.xml present at root: %s" % os.path.isfile(POM_ROOT))
+    log(".gitignore present:      %s" % os.path.isfile(GITIGNORE))
+    log("workflow present:        %s" % os.path.isfile(WORKFLOW_FILE))
 
 
 # ===========================================================================
-#  Step 3 - detect the layout (flat vs Maven) and warn if needed
-# ===========================================================================
-
-def detect_layout():
-    flat_java   = os.path.isdir(os.path.join(ROOT, "com"))
-    maven_java  = os.path.isdir(os.path.join(ROOT, "src", "main", "java"))
-    maven_res   = os.path.isdir(os.path.join(ROOT, "src", "main", "resources"))
-
-    if maven_java and maven_res:
-        print("[fixer] layout: Maven standard (src/main/java + src/main/resources)")
-        return "maven"
-
-    if flat_java:
-        print("[fixer] layout: flat JAR-extracted (com/ at repo root)")
-        print("[fixer] WARNING: Maven cannot build the flat layout.")
-        print("[fixer]          Run restructure.py first to convert to Maven layout.")
-        return "flat"
-
-    print("[fixer] layout: unknown (no com/ and no src/main/java found)")
-    return "unknown"
-
-
-# ===========================================================================
-#  Main
+#  Driver
 # ===========================================================================
 
 def main():
     print("=" * 60)
-    print(" NickSystem build.yml fixer")
+    print(" NickSystem — full repository fixer")
     print("=" * 60)
-
-    add_workflow()
-    have_pom = ensure_root_pom()
-    layout = detect_layout()
+    clean_target()
+    move_java_sources()
+    move_resources()
+    drop_meta_inf()
+    write_pom()
+    write_gitignore()
+    write_workflow()
+    sanity_check()
 
     print("=" * 60)
-    if layout == "flat":
-        print("[fixer] Next step: run  python restructure.py")
-        print("[fixer] Then:     git add -A && git commit -m 'ci: add workflow' && git push")
-    elif have_pom:
-        print("[fixer] DONE. Now run:")
-        print("[fixer]   git add -A")
-        print("[fixer]   git commit -m 'ci: add GitHub Actions build workflow'")
-        print("[fixer]   git push")
-    else:
-        print("[fixer] Workflow written, but pom.xml is missing.")
-        print("[fixer] Add a proper pom.xml at the repo root before pushing.")
+    print("[fixer] DONE. Now run:")
+    print("[fixer]   git add -A")
+    print("[fixer]   git commit -m 'fix: proper Maven layout + verified build'")
+    print("[fixer]   git push")
     print("=" * 60)
 
 

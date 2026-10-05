@@ -61,11 +61,38 @@ jobs:
           </settings>
           EOF
 
+      - name: Show project layout
+        run: |
+          echo "=== repo root ==="
+          ls -la
+          echo "=== src/main/java ==="
+          find src/main/java -maxdepth 4 -type d || true
+          echo "=== src/main/resources ==="
+          ls -la src/main/resources || true
+
       - name: Build with Maven
         run: mvn -B --no-transfer-progress clean package
 
-      - name: Show target contents
-        run: ls -la target/
+      - name: Verify JAR contents (fail if empty)
+        run: |
+          set -e
+          JAR=$(ls target/NickSystem-*.jar | head -n1)
+          SIZE=$(stat -c%s "$JAR")
+          CLASSES=$(unzip -l "$JAR" | grep -c '\.class$' || true)
+          echo "JAR:     $JAR"
+          echo "Size:    $SIZE bytes"
+          echo "Classes: $CLASSES"
+          if [ "$SIZE" -lt 20000 ]; then
+            echo "::error::JAR is suspiciously small ($SIZE bytes). Sources were likely not compiled."
+            unzip -l "$JAR"
+            exit 1
+          fi
+          if [ "$CLASSES" -lt 10 ]; then
+            echo "::error::Only $CLASSES .class files found — sources are missing from src/main/java."
+            unzip -l "$JAR"
+            exit 1
+          fi
+          echo "OK: JAR contains $CLASSES classes, $SIZE bytes."
 
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4

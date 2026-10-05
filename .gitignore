@@ -1,0 +1,25 @@
+# Build output
+target/
+*.jar
+!lib/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime files the plugin generates
+nick.db
+skincache/
+logs/
+
+# Python helper (safe to keep the file, ignore pycache)
+__pycache__/
+*.pyc
