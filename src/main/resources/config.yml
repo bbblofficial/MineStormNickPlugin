@@ -1,26 +1,9 @@
 # MineStormNickSystem configuration.
-#
-# Database credentials can be supplied through environment variables so they
-# never have to be written to disk or committed. An environment variable that
-# is set and non-blank always wins over the value in this file:
-#   NICK_DB_TYPE      sqlite | mysql
-#   NICK_DB_HOST      MySQL host
-#   NICK_DB_PORT      MySQL port
-#   NICK_DB_NAME      MySQL database name
-#   NICK_DB_USER      MySQL username
-#   NICK_DB_PASSWORD  MySQL password
-#   NICK_DB_SSL       true | false
 
 settings:
   persist-across-sessions: true
   rewrite-chat: true
   rewrite-join-quit: true
-
-# World restrictions are no longer used - nicks apply everywhere.
-#worlds:
-#  mode: WHITELIST
-#  list:
-#    - "bedwars_*"
 
 actionbar:
   enabled: true

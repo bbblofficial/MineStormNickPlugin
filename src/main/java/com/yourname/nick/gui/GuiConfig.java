@@ -8,18 +8,9 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Typed, defaulted reader for gui.yml.
- *
- * <p>Method split (this fixes the previous ambiguous-overload compile
- * error):</p>
- * <ul>
- *   <li>{@link #colorize(String)} - <b>static</b> utility that translates
- *       '&amp;' colour codes in any string.</li>
- *   <li>{@link #color(String)} - <b>instance</b> reader that looks up
- *       {@code &lt;page&gt;-color} (e.g. {@code intro-color: DARK_AQUA})
- *       and returns a {@link ChatColor}.</li>
- *   <li>{@link #style(String)} - instance reader for {@code <page>-style}.</li>
- * </ul>
+ * Typed reader for gui.yml. Every string returned by this class has
+ * already had '&' legacy codes translated to '§' so it can be consumed
+ * directly by TextComponent.fromLegacyText(...).
  */
 public final class GuiConfig {
 
@@ -31,7 +22,7 @@ public final class GuiConfig {
         public Button(String label, String command, String hover) {
             this.label = colorize(label);
             this.command = command == null ? "" : command;
-            this.hover = hover == null ? "" : hover;
+            this.hover = colorize(hover);
         }
         public String label()   { return label; }
         public String command() { return command; }
@@ -49,44 +40,38 @@ public final class GuiConfig {
         this.yaml = YamlConfiguration.loadConfiguration(f);
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Book chrome                                                       */
-    /* ------------------------------------------------------------------ */
+    /* -------- Book chrome -------- */
 
     public String title()  { return colorize(this.yaml.getString("book.title",  "Nickname Setup")); }
     public String author() { return colorize(this.yaml.getString("book.author", "MineStormNickSystem")); }
 
-    /* ------------------------------------------------------------------ */
-    /*  Generic readers                                                   */
-    /* ------------------------------------------------------------------ */
+    /* -------- Generic readers -------- */
 
     public String get(String path) {
-        return this.yaml.getString(path, "");
+        return colorize(this.yaml.getString(path, ""));
     }
 
     public List<String> list(String path) {
         List<String> l = this.yaml.getStringList(path);
-        return l == null ? Collections.<String>emptyList() : l;
+        return colorizeList(l);
     }
 
     public List<String> body(String page) {
-        List<String> l = this.yaml.getStringList(page + ".body");
-        return l == null ? Collections.<String>emptyList() : l;
+        return colorizeList(this.yaml.getStringList(page + ".body"));
     }
 
     public List<String> footer(String page) {
-        List<String> l = this.yaml.getStringList(page + ".footer");
-        return l == null ? Collections.<String>emptyList() : l;
+        return colorizeList(this.yaml.getStringList(page + ".footer"));
     }
 
-    /** Reads {@code <page>-color}; returns ChatColor.BLACK when missing. */
+    /* -------- Colour readers -------- */
+
     public ChatColor color(String page) {
         String raw = this.yaml.getString(page + "-color", "BLACK");
         try { return ChatColor.valueOf(raw.toUpperCase()); }
         catch (Throwable t) { return ChatColor.BLACK; }
     }
 
-    /** Reads {@code <page>-style}; returns null when blank. */
     public ChatColor style(String page) {
         String raw = this.yaml.getString(page + "-style", "");
         if (raw == null || raw.isEmpty()) return null;
@@ -94,9 +79,7 @@ public final class GuiConfig {
         catch (Throwable t) { return null; }
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Buttons                                                           */
-    /* ------------------------------------------------------------------ */
+    /* -------- Buttons -------- */
 
     public Button button(String key) {
         String base = "buttons." + key + ".";
@@ -122,16 +105,21 @@ public final class GuiConfig {
                 this.yaml.getString(base + "hover", ""));
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Utilities                                                         */
-    /* ------------------------------------------------------------------ */
+    /* -------- Utilities -------- */
 
-    /** Static: translate '&' legacy colour codes in an arbitrary string. */
+    /** Static: translate '&' codes to '§'. */
     public static String colorize(String s) {
         return ChatColor.translateAlternateColorCodes('&', s == null ? "" : s);
     }
 
-    /** Simple %key% -> value substitution. */
+    private static List<String> colorizeList(List<String> in) {
+        if (in == null) return Collections.emptyList();
+        java.util.List<String> out = new java.util.ArrayList<String>(in.size());
+        for (String s : in) out.add(colorize(s));
+        return out;
+    }
+
+    /** %key% -> value substitution (applied BEFORE colorize on the caller side). */
     public String format(String raw, String... pairs) {
         if (raw == null) return "";
         String out = raw;
@@ -140,6 +128,6 @@ public final class GuiConfig {
             String val = pairs[i + 1] == null ? "" : pairs[i + 1];
             out = out.replace("%" + key + "%", val);
         }
-        return out;
+        return colorize(out);
     }
 }

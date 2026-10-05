@@ -47,10 +47,8 @@ public final class MineStormNickPlugin extends JavaPlugin {
     private GuiConfig        guiConfig;
     private LuckPermsHook    luckPerms;
     private Runnable         placeholderCleanup;
-
-    /** Tracked to prevent duplicate scheduler tasks across reloads. */
-    private BukkitTask actionBarTask;
-    private BukkitTask pruneTask;
+    private BukkitTask       actionBarTask;
+    private BukkitTask       pruneTask;
 
     @Override
     public void onLoad() {
@@ -111,12 +109,12 @@ public final class MineStormNickPlugin extends JavaPlugin {
         pm.registerEvents(new WorldListener(this.disguises), this);
         pm.registerEvents(new ChatListener(getConfig(), this.registry, this.bedwars), this);
 
-        bind("nick",       new NickCommand(this, this.messages, this.bookGui,
-                                           this.disguises, this.skins, this.validator));
-        bind("realname",   new RealNameCommand(this, this.messages,
-                                               this.registry, this.storage));
-        bind("minestormnicksystem", new MineStormNickSystemCommand(this));
-        bind("g",          new GlobalCommand(this, this.messages, this.luckPerms));
+        bind("nick",                 new NickCommand(this, this.messages, this.bookGui,
+                                                     this.disguises, this.skins, this.validator));
+        bind("realname",             new RealNameCommand(this, this.messages,
+                                                         this.registry, this.storage));
+        bind("minestormnicksystem",  new MineStormNickSystemCommand(this));
+        bind("g",                    new GlobalCommand(this, this.messages, this.luckPerms));
 
         scheduleTasks();
 
@@ -134,7 +132,6 @@ public final class MineStormNickPlugin extends JavaPlugin {
     public void onDisable() {
         cancelTasks();
         getServer().getScheduler().cancelTasks(this);
-
         if (this.placeholderCleanup != null) {
             this.placeholderCleanup.run();
             this.placeholderCleanup = null;
@@ -145,10 +142,6 @@ public final class MineStormNickPlugin extends JavaPlugin {
         if (this.storage   != null) this.storage.close();
         if (this.packets   != null) this.packets.disable();
     }
-
-    /* ------------------------------------------------------------------ */
-    /*  Reload                                                            */
-    /* ------------------------------------------------------------------ */
 
     public void reloadEverything() {
         try {
@@ -172,21 +165,15 @@ public final class MineStormNickPlugin extends JavaPlugin {
 
             cancelTasks();
             scheduleTasks();
-
             getLogger().info("MineStormNickSystem reloaded.");
         } catch (Throwable t) {
             getLogger().log(Level.SEVERE, "Reload failed", t);
         }
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Internals                                                         */
-    /* ------------------------------------------------------------------ */
-
     private void scheduleTasks() {
         if (getConfig().getBoolean("actionbar.enabled", true)) {
-            long interval = Math.max(10L,
-                    getConfig().getLong("actionbar.interval-ticks", 40L));
+            long interval = Math.max(10L, getConfig().getLong("actionbar.interval-ticks", 40L));
             ActionBarTask task = new ActionBarTask(
                     this, this.registry,
                     this.messages.get("actionbar"),

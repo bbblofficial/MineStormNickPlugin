@@ -58,8 +58,7 @@ public final class LuckPermsHook {
     private boolean hasLuckPerms() {
         try {
             Class.forName("net.luckperms.api.LuckPermsProvider");
-            return this.plugin.getServer()
-                    .getPluginManager().isPluginEnabled("LuckPerms");
+            return this.plugin.getServer().getPluginManager().isPluginEnabled("LuckPerms");
         } catch (Throwable t) { return false; }
     }
 

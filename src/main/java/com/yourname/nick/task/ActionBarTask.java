@@ -9,32 +9,26 @@ import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 
-/**
- * Sends the "you are nicked" indicator through the ACTION BAR only,
- * never through chat.
- *
- * <p>Bug fixes preserved here:</p>
- * <ul>
- *   <li>Chat spam eliminated - the indicator never touches chat.</li>
- *   <li>Version compatibility - Spigot 1.8.8 only ships
- *       {@code Player.Spigot#sendMessage(BaseComponent...)}; the
- *       {@code ChatMessageType} overload came later. We probe for the
- *       newer API once and fall back to the 1.8.8 method.</li>
- * </ul>
- */
 public final class ActionBarTask implements Runnable {
 
-    /** Cached at class-load; null means the 1.8.8 method is used. */
-    private static final Method ACTIONBAR_METHOD = resolveActionBarMethod();
+    /** null == Spigot 1.8.8 fallback (BaseComponent[]). */
+    private static final Method ACTIONBAR_METHOD = resolve();
+    private static final Object ACTIONBAR_ENUM_VALUE = resolveEnum();
 
-    private static Method resolveActionBarMethod() {
+    private static Method resolve() {
         try {
             Class<?> spigot = Class.forName("org.bukkit.entity.Player$Spigot");
             Class<?> type   = Class.forName("net.md_5.bungee.api.ChatMessageType");
             return spigot.getMethod("sendMessage", type, BaseComponent[].class);
-        } catch (Throwable ignored) {
-            return null;
-        }
+        } catch (Throwable ignored) { return null; }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Object resolveEnum() {
+        try {
+            Class<?> type = Class.forName("net.md_5.bungee.api.ChatMessageType");
+            return Enum.valueOf((Class<? extends Enum>) type, "ACTION_BAR");
+        } catch (Throwable ignored) { return null; }
     }
 
     private final MineStormNickPlugin plugin;
@@ -56,31 +50,20 @@ public final class ActionBarTask implements Runnable {
     @Override
     public void run() {
         if (this.indicator.isEmpty()) return;
-
         BaseComponent[] components = TextComponent.fromLegacyText(this.indicator);
 
         for (DisguiseProfile profile : this.registry.all()) {
             Player player = this.plugin.getServer().getPlayer(profile.realUuid());
             if (player == null || !player.isOnline()) continue;
             if (!profile.active() && !this.showWhenDormant) continue;
-
             try {
-                if (ACTIONBAR_METHOD != null) {
-                    // Paper / newer Spigot: real action-bar slot.
-                    Object typeEnum = Enum.valueOf(
-                            (Class<? extends Enum>) Class.forName(
-                                    "net.md_5.bungee.api.ChatMessageType"),
-                            "ACTION_BAR");
-                    ACTIONBAR_METHOD.invoke(player.spigot(), typeEnum, components);
+                if (ACTIONBAR_METHOD != null && ACTIONBAR_ENUM_VALUE != null) {
+                    ACTIONBAR_METHOD.invoke(player.spigot(),
+                            ACTIONBAR_ENUM_VALUE, components);
                 } else {
-                    // Spigot 1.8.8: send raw BaseComponent[] (goes to the
-                    // action-bar slot on 1.8.8 clients because of how
-                    // CraftBukkit patches Spigot#sendMessage).
                     player.spigot().sendMessage(components);
                 }
-            } catch (Throwable ignored) {
-                // One bad connection must never kill the task.
-            }
+            } catch (Throwable ignored) { }
         }
     }
 }

@@ -10,11 +10,6 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 
-/**
- * /minestormnicksystem reload (alias /msns)
- * Reloads config.yml, gui.yml, messages.yml, names.yml; cancels and
- * reschedules all tasks so repeated reloads never stack duplicates.
- */
 public final class MineStormNickSystemCommand implements TabExecutor {
 
     private final MineStormNickPlugin plugin;

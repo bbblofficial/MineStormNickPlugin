@@ -1,6 +1,6 @@
 package com.yourname.nick.gui;
 
-import com.yourname.nick.NickPlugin;
+import com.yourname.nick.MineStormNickPlugin;
 import com.yourname.nick.disguise.DisguiseManager;
 import com.yourname.nick.message.Messages;
 import com.yourname.nick.model.DisguiseProfile;
@@ -29,16 +29,9 @@ import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
-/**
- * Book-driven nickname setup. Every step is rendered inside a written
- * book with clickable / hoverable text so the chat is never used for
- * UI navigation.
- *
- * <p>All strings come from gui.yml through {@link GuiConfig}.</p>
- */
 public final class BookGUIManager {
 
-    private final NickPlugin plugin;
+    private final MineStormNickPlugin plugin;
     private final Messages messages;
     private final GuiConfig gui;
     private final DisguiseManager disguises;
@@ -50,7 +43,7 @@ public final class BookGUIManager {
     private final Map<UUID, NickSession> sessions =
             new ConcurrentHashMap<UUID, NickSession>();
 
-    public BookGUIManager(NickPlugin plugin,
+    public BookGUIManager(MineStormNickPlugin plugin,
                           Messages messages,
                           GuiConfig gui,
                           DisguiseManager disguises,
@@ -71,17 +64,12 @@ public final class BookGUIManager {
     public void open(final Player player) {
         this.storage.findLastSetForPlayer(player.getUniqueId()).whenComplete(
                 new BiConsumer<Optional<NickRecord>, Throwable>() {
-            @Override
-            public void accept(final Optional<NickRecord> last, final Throwable error) {
+            @Override public void accept(final Optional<NickRecord> last, final Throwable error) {
                 Async.main(BookGUIManager.this.plugin, new Runnable() {
-                    @Override
-                    public void run() {
-                        if (!player.isOnline()) {
-                            return;
-                        }
-                        NickRecord history =
-                                (error == null && last != null && last.isPresent())
-                                        ? last.get() : null;
+                    @Override public void run() {
+                        if (!player.isOnline()) return;
+                        NickRecord history = (error == null && last != null && last.isPresent())
+                                ? last.get() : null;
                         sessions.put(player.getUniqueId(), new NickSession(history));
                         showIntro(player);
                     }
@@ -92,30 +80,16 @@ public final class BookGUIManager {
 
     public void handle(Player player, String[] args) {
         NickSession session = this.sessions.get(player.getUniqueId());
-        if (session == null) {
-            open(player);
-            return;
-        }
-        if (args.length == 0) {
-            showIntro(player);
-            return;
-        }
+        if (session == null) { open(player); return; }
+        if (args.length == 0) { showIntro(player); return; }
         String sub = args[0].toLowerCase(Locale.ROOT);
-        if ("rank".equals(sub)) {
-            chooseRank(player, session, args);
-        } else if ("skin".equals(sub)) {
-            chooseSkin(player, session, args);
-        } else if ("name".equals(sub)) {
-            chooseName(player, session, args);
-        } else if ("use".equals(sub)) {
-            useRolledName(player, session);
-        } else if ("reroll".equals(sub)) {
-            rollName(player, session);
-        } else if ("close".equals(sub)) {
-            // book already closed
-        } else {
-            showIntro(player);
-        }
+        if ("rank".equals(sub))        chooseRank(player, session, args);
+        else if ("skin".equals(sub))   chooseSkin(player, session, args);
+        else if ("name".equals(sub))   chooseName(player, session, args);
+        else if ("use".equals(sub))    useRolledName(player, session);
+        else if ("reroll".equals(sub)) rollName(player, session);
+        else if ("close".equals(sub))  { /* book already closed */ }
+        else                           showIntro(player);
     }
 
     public void applyCustomName(Player player, String nick) {
@@ -146,12 +120,7 @@ public final class BookGUIManager {
 
     private void showIntro(Player player) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("intro.title"), gui.style("intro.title"),
-                gui.get("intro.title")));
-        out.add(blank());
-        for (String l : gui.list("intro.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
+        out.add(line(ChatColor.DARK_AQUA, ChatColor.BOLD, "MineStorm Nickname Setup"));
         out.add(blank());
         GuiConfig.Button b = gui.button("start");
         out.add(button(b.label(), b.command(), b.hover()));
@@ -160,94 +129,67 @@ public final class BookGUIManager {
 
     private void showRankPicker(Player player) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("rank.title"), gui.style("rank.title"),
-                gui.get("rank.title")));
-        out.add(blank());
-        for (String l : gui.list("rank.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
-        out.add(blank());
+        for (String raw : gui.body("rank")) out.add(lineFromLegacy(raw));
         for (Rank r : Rank.values()) {
-            out.add(button("[" + r.label() + "]",
-                    "/nick ui rank " + r.name(),
-                    "Use " + r.label()));
+            GuiConfig.Button e = gui.entry("rank", r.name());
+            String label = empty(e.label()) ? "&8➤ &7" + r.label() : e.label();
+            String hover = empty(e.hover()) ? "Use " + r.label() : e.hover();
+            out.add(button(label, "/nick ui rank " + r.name(), hover));
         }
         openBook(player, out.toArray(new BaseComponent[out.size()]));
     }
 
     private void showSkin(Player player, NickSession session) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("skin.title"), gui.style("skin.title"),
-                gui.get("skin.title")));
-        out.add(blank());
-        for (String l : gui.list("skin.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
-        out.add(blank());
-        addButton(out, "skin.normal",  "/nick ui skin normal",  "Keep your own skin");
-        addButton(out, "skin.default", "/nick ui skin default", "Default skin");
-        addButton(out, "skin.random",  "/nick ui skin random",  "Random from pool");
-        if (session.history() != null) {
-            addButton(out, "skin.reuse", "/nick ui skin reuse",
-                    "Your last nickname's skin");
-        }
+        for (String raw : gui.body("skin")) out.add(lineFromLegacy(raw));
+        addEntry(out, "skin", "normal",  "/nick ui skin normal");
+        addEntry(out, "skin", "default", "/nick ui skin default");
+        addEntry(out, "skin", "random",  "/nick ui skin random");
+        if (session.history() != null) addEntry(out, "skin", "reuse", "/nick ui skin reuse");
         openBook(player, out.toArray(new BaseComponent[out.size()]));
     }
 
     private void showName(Player player, NickSession session) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("name.title"), gui.style("name.title"),
-                gui.get("name.title")));
-        out.add(blank());
-        for (String l : gui.list("name.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
-        out.add(blank());
-        addButton(out, "name.random", "/nick ui name random",
-                "Generate a random username");
-        if (session.history() != null) {
-            addButton(out, "name.reuse", "/nick ui name reuse",
-                    "Your last nickname");
-        }
-        out.add(blank());
-        addButton(out, "name.reset", "/nick reset",
-                "Go back to your real name");
+        for (String raw : gui.body("name")) out.add(lineFromLegacy(raw));
+        addEntry(out, "name", "random", "/nick ui name random");
+        if (session.history() != null) addEntry(out, "name", "reuse", "/nick ui name reuse");
+        for (String raw : gui.footer("name")) out.add(lineFromLegacy(raw));
         openBook(player, out.toArray(new BaseComponent[out.size()]));
     }
 
     private void showRolledName(Player player, NickSession session) {
         String name = session.pendingName();
-        if (name == null) {
-            showName(player, session);
-            return;
-        }
+        if (name == null) { showName(player, session); return; }
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("rolled.title"), gui.style("rolled.title"),
-                gui.get("rolled.title")));
-        out.add(blank());
-        for (String l : gui.list("rolled.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
+        for (String raw : gui.body("rolled")) {
+            out.add(lineFromLegacy(gui.format(raw, "name", name)));
         }
-        out.add(blank());
-        out.add(line(ChatColor.YELLOW, ChatColor.BOLD, name));
-        out.add(blank());
-        addButton(out, "rolled.use",   "/nick ui use",    "Nick as " + name);
-        addButton(out, "rolled.again", "/nick ui reroll", "Generate a different name");
+        GuiConfig.Button use = gui.pageButton("rolled", "use");
+        GuiConfig.Button again = gui.pageButton("rolled", "again");
+        out.add(button(
+                empty(use.label()) ? "&a&l[USE NAME]" : use.label(),
+                "/nick ui use",
+                gui.format(empty(use.hover()) ? "Nick as %name%" : use.hover(),
+                        "name", name)));
+        out.add(button(
+                empty(again.label()) ? "&c&l[TRY AGAIN]" : again.label(),
+                "/nick ui reroll",
+                empty(again.hover()) ? "Generate a different name" : again.hover()));
         openBook(player, out.toArray(new BaseComponent[out.size()]));
     }
 
     private void showFinished(Player player, String nick) {
+        Rank rank = Rank.DEFAULT;
+        Optional<DisguiseProfile> prof = disguises.profile(player.getUniqueId());
+        if (prof.isPresent()) rank = prof.get().rank();
+
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("done.title"), gui.style("done.title"),
-                gui.get("done.title")));
-        out.add(blank());
-        for (String l : gui.list("done.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
-        out.add(line(ChatColor.YELLOW, ChatColor.BOLD, nick));
-        out.add(blank());
-        for (String l : gui.list("done.footer")) {
-            out.add(line(ChatColor.DARK_GRAY, null, l));
+        for (String raw : gui.body("done")) {
+            out.add(lineFromLegacy(gui.format(raw,
+                    "name", nick,
+                    "rank", rank.label(),
+                    "player", player.getName())));
         }
         openBook(player, out.toArray(new BaseComponent[out.size()]));
     }
@@ -257,80 +199,48 @@ public final class BookGUIManager {
     /* ------------------------------------------------------------------ */
 
     private void chooseRank(Player player, NickSession session, String[] args) {
-        if (args.length < 2) {
-            showRankPicker(player);
-            return;
-        }
+        if (args.length < 2) { showRankPicker(player); return; }
         Optional<Rank> rank = Rank.parse(args[1]);
-        if (!rank.isPresent()) {
-            showRankPicker(player);
-            return;
-        }
+        if (!rank.isPresent()) { showRankPicker(player); return; }
         session.rank(rank.get());
         session.step(NickSession.Step.SKIN);
         showSkin(player, session);
     }
 
     private void chooseSkin(Player player, NickSession session, String[] args) {
-        if (args.length < 2) {
-            showSkin(player, session);
-            return;
-        }
+        if (args.length < 2) { showSkin(player, session); return; }
         String choice = args[1].toLowerCase(Locale.ROOT);
-        if ("normal".equals(choice)) {
-            session.skin(SkinData.normal());
-        } else if ("default".equals(choice)) {
-            session.skin(SkinData.defaultSkin());
-        } else if ("random".equals(choice)) {
+        if ("normal".equals(choice))      session.skin(SkinData.normal());
+        else if ("default".equals(choice)) session.skin(SkinData.defaultSkin());
+        else if ("random".equals(choice)) {
             Optional<SkinData> pick = this.skins.randomPoolSkin();
             session.skin(pick.isPresent() ? pick.get() : SkinData.defaultSkin());
         } else if ("reuse".equals(choice)) {
-            if (session.history() == null) {
-                showSkin(player, session);
-                return;
-            }
+            if (session.history() == null) { showSkin(player, session); return; }
             session.skin(session.history().toSkinData());
-        } else {
-            showSkin(player, session);
-            return;
-        }
+        } else { showSkin(player, session); return; }
         session.step(NickSession.Step.NAME);
         showName(player, session);
     }
 
     private void chooseName(Player player, NickSession session, String[] args) {
-        if (args.length < 2) {
-            showName(player, session);
-            return;
-        }
+        if (args.length < 2) { showName(player, session); return; }
         String choice = args[1].toLowerCase(Locale.ROOT);
-        if ("random".equals(choice)) {
-            rollName(player, session);
-        } else if ("reuse".equals(choice)) {
-            if (session.history() == null) {
-                showName(player, session);
-                return;
-            }
+        if ("random".equals(choice))      rollName(player, session);
+        else if ("reuse".equals(choice)) {
+            if (session.history() == null) { showName(player, session); return; }
             finish(player, session, session.history().nickname());
-        } else {
-            showName(player, session);
-        }
+        } else showName(player, session);
     }
 
     private void useRolledName(Player player, NickSession session) {
-        if (session.pendingName() == null) {
-            showName(player, session);
-            return;
-        }
+        if (session.pendingName() == null) { showName(player, session); return; }
         finish(player, session, session.pendingName());
     }
 
     private void rollName(Player player, NickSession session) {
         Optional<String> name = this.generator.generate(player);
-        if (!name.isPresent()) {
-            showName(player, session);
-            return;
-        }
+        if (!name.isPresent()) { showName(player, session); return; }
         session.pendingName(name.get());
         session.step(NickSession.Step.ROLLER);
         showRolledName(player, session);
@@ -339,12 +249,8 @@ public final class BookGUIManager {
     private void finish(Player player, NickSession session, String nick) {
         NameValidator.Result result = this.validator.validate(nick, player);
         if (result != NameValidator.Result.VALID) {
-            if (session.step() == NickSession.Step.ROLLER) {
-                rollName(player, session);
-            } else {
-                session.step(NickSession.Step.NAME);
-                showName(player, session);
-            }
+            if (session.step() == NickSession.Step.ROLLER) rollName(player, session);
+            else { session.step(NickSession.Step.NAME); showName(player, session); }
             return;
         }
         this.disguises.apply(player, nick, session.rank(), session.skin());
@@ -353,25 +259,23 @@ public final class BookGUIManager {
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Component helpers                                                 */
+    /*  Helpers                                                           */
     /* ------------------------------------------------------------------ */
 
-    private void addButton(List<BaseComponent> out, String key,
-                           String fallbackCmd, String fallbackHover) {
-        GuiConfig.Button b = gui.button(key);
-        String cmd = (b.command() == null || b.command().isEmpty())
-                ? fallbackCmd : b.command();
-        String hover = (b.hover() == null || b.hover().isEmpty())
-                ? fallbackHover : b.hover();
-        String label = (b.label() == null || b.label().isEmpty())
-                ? ("[ " + key + " ]") : b.label();
-        out.add(button(label, cmd, hover));
+    private void addEntry(List<BaseComponent> out, String page,
+                          String key, String command) {
+        GuiConfig.Button e = gui.entry(page, key);
+        String label = empty(e.label()) ? ("&8➤ &7" + key) : e.label();
+        String hover = empty(e.hover()) ? key : e.hover();
+        out.add(button(label, command, hover));
     }
 
     private void openBook(Player player, BaseComponent[] page) {
         ItemStack book = VirtualBook.buildComponents(gui.title(), gui.author(), page);
         VirtualBook.open(player, book, page);
     }
+
+    private static boolean empty(String s) { return s == null || s.isEmpty(); }
 
     private static BaseComponent blank() {
         return new TextComponent(TextComponent.fromLegacyText("\n"));
@@ -380,11 +284,14 @@ public final class BookGUIManager {
     private static BaseComponent line(ChatColor colour, ChatColor style, String text) {
         StringBuilder sb = new StringBuilder();
         sb.append(colour == null ? "" : colour.toString());
-        if (style != null) {
-            sb.append(style.toString());
-        }
+        if (style != null) sb.append(style.toString());
         sb.append(text == null ? "" : text).append('\n');
         return new TextComponent(TextComponent.fromLegacyText(sb.toString()));
+    }
+
+    private static BaseComponent lineFromLegacy(String raw) {
+        String s = (raw == null) ? "" : raw;
+        return new TextComponent(TextComponent.fromLegacyText(s + "\n"));
     }
 
     private static BaseComponent button(String label, String command, String hover) {
