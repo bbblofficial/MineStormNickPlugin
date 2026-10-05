@@ -39,6 +39,8 @@ integrations:
 
 # ---------------------------------------------------------------------------
 # LuckPerms integration - controls who can use /g.
+# The fixer writes enabled=true/false automatically based on what it
+# detects on disk.
 # ---------------------------------------------------------------------------
 luckperms:
   enabled: true

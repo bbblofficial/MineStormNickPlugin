@@ -4,19 +4,17 @@ import java.util.logging.Logger;
 import org.bukkit.configuration.ConfigurationSection;
 
 /**
- * World restrictions were removed. Nicknames are now active everywhere
- * the moment they are applied, matching Hypixel's behaviour.
- * Kept as a class so existing callers still compile.
+ * World restrictions were removed. Nicknames are active everywhere the
+ * moment they are applied. The {@code worlds:} section in config.yml is
+ * intentionally ignored.
  */
 public final class WorldRules {
 
     private static final WorldRules INSTANCE = new WorldRules();
 
-    private WorldRules() {
-    }
+    private WorldRules() { }
 
     public static WorldRules fromConfig(ConfigurationSection config, Logger logger) {
-        // worlds.* is intentionally ignored now.
         return INSTANCE;
     }
 

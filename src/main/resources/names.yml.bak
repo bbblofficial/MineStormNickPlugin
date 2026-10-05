@@ -45,6 +45,7 @@ generator:
     - Lynx
     - Gecko
 
+# Exact names (case-insensitive) that can never be used as a nickname.
 reserved:
   - Notch
   - jeb_
@@ -61,6 +62,7 @@ reserved:
   - Server
   - Staff
 
+# Fragments that may not appear anywhere inside a nickname (case-insensitive).
 reserved-fragments:
   - admin
   - moderator

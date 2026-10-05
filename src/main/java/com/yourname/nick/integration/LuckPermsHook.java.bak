@@ -22,6 +22,7 @@ public final class LuckPermsHook {
         this.plugin = plugin;
         reload(plugin.getConfig());
     }
+
     public void reload(FileConfiguration cfg) {
         this.enabled = cfg.getBoolean("luckperms.enabled", true);
         this.requiredGroup = String.valueOf(
@@ -38,6 +39,7 @@ public final class LuckPermsHook {
         }
         if (this.trackedGroups.isEmpty()) this.trackedGroups.add(this.requiredGroup);
     }
+
     public boolean isRanked(Player player) {
         if (player == null) return false;
         if (this.enabled && hasLuckPerms()) {
@@ -52,12 +54,14 @@ public final class LuckPermsHook {
         }
         return player.hasPermission(this.fallbackPermission);
     }
+
     private boolean hasLuckPerms() {
         try {
             Class.forName("net.luckperms.api.LuckPermsProvider");
             return this.plugin.getServer().getPluginManager().isPluginEnabled("LuckPerms");
         } catch (Throwable t) { return false; }
     }
+
     private boolean checkViaLuckPerms(Player player) throws Exception {
         Class<?> provider = Class.forName("net.luckperms.api.LuckPermsProvider");
         Object luckPerms  = provider.getMethod("get").invoke(null);
@@ -70,8 +74,10 @@ public final class LuckPermsHook {
         String primaryGroup = String.valueOf(
                 meta.getClass().getMethod("getPrimaryGroup").invoke(meta))
                 .toLowerCase(Locale.ROOT);
+
         if (this.trackedGroups.contains(primaryGroup)) return true;
         if (!this.checkInheritance) return false;
+
         try {
             Method getInherited = meta.getClass().getMethod("getInheritedGroups");
             Object inherited = getInherited.invoke(meta);
@@ -88,5 +94,6 @@ public final class LuckPermsHook {
         }
         return false;
     }
+
     public String requiredGroup() { return this.requiredGroup; }
 }

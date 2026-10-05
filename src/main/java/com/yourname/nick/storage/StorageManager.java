@@ -21,11 +21,16 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
+/**
+ * SQLite/MySQL storage on a dedicated thread.
+ * Never calls Connection#isValid(int): the driver bundled with Spigot
+ * 1.8.8 does not implement it and Java 17 throws AbstractMethodError.
+ */
 public final class StorageManager {
 
     private static final String COLUMNS =
-            "real_uuid, real_name, nickname, rank_used, skin_source, skin_value, " +
-            "skin_signature, action, created_at, ip";
+            "real_uuid, real_name, nickname, rank_used, skin_source, skin_value, "
+            + "skin_signature, action, created_at, ip";
 
     private final MineStormNickPlugin plugin;
     private final ExecutorService executor;
@@ -37,12 +42,10 @@ public final class StorageManager {
 
     public StorageManager(MineStormNickPlugin plugin) {
         this.plugin = plugin;
-
         String type = setting("NICK_DB_TYPE",
                 plugin.getConfig().getString("storage.type", "sqlite"))
                 .toLowerCase(Locale.ROOT);
         this.mysql = "mysql".equals(type);
-
         if (this.mysql) {
             String host = setting("NICK_DB_HOST",
                     plugin.getConfig().getString("storage.mysql.host", "localhost"));
@@ -57,10 +60,8 @@ public final class StorageManager {
             this.password = setting("NICK_DB_PASSWORD",
                     plugin.getConfig().getString("storage.mysql.password", ""));
             this.jdbcUrl = "jdbc:mysql://" + host + ":" + port + "/" + database
-                    + "?useSSL=" + ssl
-                    + "&allowPublicKeyRetrieval=true"
-                    + "&characterEncoding=utf8"
-                    + "&serverTimezone=UTC";
+                    + "?useSSL=" + ssl + "&allowPublicKeyRetrieval=true"
+                    + "&characterEncoding=utf8&serverTimezone=UTC";
         } else {
             File file = new File(plugin.getDataFolder(),
                     plugin.getConfig().getString("storage.sqlite-file", "nick.db"));
@@ -73,7 +74,6 @@ public final class StorageManager {
             this.password = "";
             this.jdbcUrl = "jdbc:sqlite:" + file.getAbsolutePath();
         }
-
         this.executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "MineStormNickSystem-DB");
             thread.setDaemon(true);
@@ -91,7 +91,6 @@ public final class StorageManager {
             }
         });
     }
-
     public CompletableFuture<Void> insert(final NickRecord record) {
         return submit(new SqlTask<Void>() {
             @Override public Void run(Connection conn) throws SQLException {
@@ -114,7 +113,6 @@ public final class StorageManager {
             }
         });
     }
-
     public CompletableFuture<Optional<NickRecord>> findLatestForPlayer(UUID uuid) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE real_uuid = ? ORDER BY id DESC LIMIT 1", uuid.toString());
@@ -129,7 +127,6 @@ public final class StorageManager {
                 + "WHERE LOWER(nickname) = LOWER(?) AND action = 'SET' "
                 + "ORDER BY id DESC LIMIT 1", nickname);
     }
-
     public void close() {
         try {
             this.executor.execute(new Runnable() {
@@ -164,7 +161,6 @@ public final class StorageManager {
         } catch (RejectedExecutionException e) { future.completeExceptionally(e); }
         return future;
     }
-
     private <T> T runWithRetry(SqlTask<T> task) throws SQLException {
         try { return task.run(openConnection()); }
         catch (Throwable first) {
@@ -174,7 +170,6 @@ public final class StorageManager {
             return task.run(openConnection());
         }
     }
-
     private CompletableFuture<Optional<NickRecord>> queryOne(
             final String sql, final String parameter) {
         return submit(new SqlTask<Optional<NickRecord>>() {
@@ -189,7 +184,6 @@ public final class StorageManager {
             }
         });
     }
-
     private Connection openConnection() throws SQLException {
         if (this.connection != null && !this.connection.isClosed()
                 && probe(this.connection)) {
@@ -197,9 +191,7 @@ public final class StorageManager {
         }
         closeConnection();
         try {
-            Class.forName(this.mysql
-                    ? "com.mysql.cj.jdbc.Driver"
-                    : "org.sqlite.JDBC");
+            Class.forName(this.mysql ? "com.mysql.cj.jdbc.Driver" : "org.sqlite.JDBC");
         } catch (ClassNotFoundException e) {
             throw new SQLException("JDBC driver not available on this server", e);
         }
@@ -214,16 +206,12 @@ public final class StorageManager {
         }
         return this.connection;
     }
-
     private static boolean probe(Connection connection) {
         try (Statement s = connection.createStatement()) {
             s.execute("SELECT 1");
             return true;
-        } catch (SQLException | AbstractMethodError e) {
-            return false;
-        }
+        } catch (SQLException | AbstractMethodError e) { return false; }
     }
-
     private void closeConnection() {
         if (this.connection == null) return;
         try { this.connection.close(); }
@@ -232,7 +220,6 @@ public final class StorageManager {
                     "Failed to close database connection", e);
         } finally { this.connection = null; }
     }
-
     private List<String> schema() {
         List<String> out = new ArrayList<String>();
         if (this.mysql) {
@@ -271,7 +258,6 @@ public final class StorageManager {
         }
         return out;
     }
-
     private static NickRecord map(ResultSet rs) throws SQLException {
         return new NickRecord(
                 UUID.fromString(rs.getString("real_uuid")),

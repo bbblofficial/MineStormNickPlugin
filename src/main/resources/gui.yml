@@ -1,6 +1,5 @@
 # -----------------------------------------------------------------------------
 # gui.yml - strings shown inside the /nick setup book.
-# Legacy '&' colour codes are translated automatically.
 # Hot-reloadable with /minestormnicksystem reload.
 # -----------------------------------------------------------------------------
 
@@ -16,19 +15,19 @@ rank:
     - ""
   entries:
     DEFAULT:
-      label: "&8➤ &7DEFAULT"
+      label: "&8> &7DEFAULT"
       hover: "Play as the default rank"
     VIP:
-      label: "&8➤ &aVIP"
+      label: "&8> &aVIP"
       hover: "Play as VIP"
     VIP_PLUS:
-      label: "&8➤ &aVIP&6+"
+      label: "&8> &aVIP&6+"
       hover: "Play as VIP+"
     MVP:
-      label: "&8➤ &bMVP"
+      label: "&8> &bMVP"
       hover: "Play as MVP"
     MVP_PLUS:
-      label: "&8➤ &bMVP&c+"
+      label: "&8> &bMVP&c+"
       hover: "Play as MVP+"
 
 skin:
@@ -38,16 +37,16 @@ skin:
     - ""
   entries:
     normal:
-      label: "&8➤ &1My normal skin"
+      label: "&8> &1My normal skin"
       hover: "Keep your own skin"
     default:
-      label: "&8➤ &1Steve/Alex skin"
+      label: "&8> &1Steve/Alex skin"
       hover: "Use the default Steve/Alex skin"
     random:
-      label: "&8➤ &1Random skin"
+      label: "&8> &1Random skin"
       hover: "Pick a random skin from the pool"
     reuse:
-      label: "&8➤ &1Reuse [Previous Skin]"
+      label: "&8> &1Reuse [Previous Skin]"
       hover: "Use the skin from your last nickname"
 
 name:
@@ -57,10 +56,10 @@ name:
     - ""
   entries:
     random:
-      label: "&8➤ &1Use a random name"
+      label: "&8> &1Use a random name"
       hover: "Generate a random username"
     reuse:
-      label: "&8➤ &1Reuse [Previous Name]"
+      label: "&8> &1Reuse [Previous Name]"
       hover: "Use the name from your last nickname"
   footer:
     - ""

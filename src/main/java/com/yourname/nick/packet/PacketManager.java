@@ -14,7 +14,6 @@ public final class PacketManager {
 
     private final MineStormNickPlugin plugin;
     private final DisguiseRegistry registry;
-
     private Class<?> packetInfoClass;
     private Class<?> packetDestroyClass;
     private Class<?> packetSpawnClass;
@@ -25,7 +24,6 @@ public final class PacketManager {
     private Class<?> worldServerClass;
     private Class<?> playerConnectionClass;
     private Class<?> chatComponentClass;
-
     private Method getHandleMethod;
     private Field  playerConnectionField;
     private Method sendPacketMethod;
@@ -33,7 +31,6 @@ public final class PacketManager {
     private Method getIdMethod;
     private Method setLocationMethod;
     private Method spawnInMethod;
-
     private boolean enabled = false;
 
     public PacketManager(MineStormNickPlugin plugin, DisguiseRegistry registry) {
@@ -107,17 +104,14 @@ public final class PacketManager {
                         .getConstructor(String.class).newInstance(nick);
                 listName.set(handle, component);
             }
-
             Object profile = this.getProfileMethod.invoke(handle);
             if (profile != null) {
                 try {
-                    Method setName = profile.getClass()
-                            .getMethod("setName", String.class);
+                    Method setName = profile.getClass().getMethod("setName", String.class);
                     setName.setAccessible(true);
                     setName.invoke(profile, nick);
                 } catch (Throwable ignored) { }
             }
-
             List<Object> players = new ArrayList<Object>();
             players.add(handle);
             Object updateAction = enumAction("UPDATE_DISPLAY_NAME");
@@ -134,21 +128,15 @@ public final class PacketManager {
         try {
             Object handle = this.getHandleMethod.invoke(target);
             int entityId = (Integer) this.getIdMethod.invoke(handle);
-
             Object destroyPacket = this.packetDestroyClass
                     .getConstructor(int[].class)
                     .newInstance((Object) new int[] { entityId });
-
             Object world = target.getWorld();
-            Object worldServer = world.getClass()
-                    .getMethod("getHandle").invoke(world);
-
+            Object worldServer = world.getClass().getMethod("getHandle").invoke(world);
             if (this.setLocationMethod != null) {
                 this.setLocationMethod.invoke(handle,
-                        target.getLocation().getX(),
-                        target.getLocation().getY(),
-                        target.getLocation().getZ(),
-                        target.getLocation().getYaw(),
+                        target.getLocation().getX(), target.getLocation().getY(),
+                        target.getLocation().getZ(), target.getLocation().getYaw(),
                         target.getLocation().getPitch());
             }
             if (this.spawnInMethod.getParameterTypes().length == 1) {
@@ -156,10 +144,8 @@ public final class PacketManager {
             } else {
                 this.spawnInMethod.invoke(handle);
             }
-
             Object spawnPacket = this.packetSpawnClass
                     .getConstructor(this.entityHumanClass).newInstance(handle);
-
             for (Player viewer : Bukkit.getOnlinePlayers()) {
                 if (viewer.equals(target)) continue;
                 sendPacket(viewer, destroyPacket);
@@ -201,26 +187,20 @@ public final class PacketManager {
     }
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Object enumAction(String name) throws Exception {
-        return Enum.valueOf(
-                (Class<? extends Enum>) this.enumPlayerInfoActionClass, name);
+        return Enum.valueOf((Class<? extends Enum>) this.enumPlayerInfoActionClass, name);
     }
-    private Object buildInfoPacket(Object action, List<Object> players)
-            throws Exception {
-        for (java.lang.reflect.Constructor<?> ctor
-                : this.packetInfoClass.getConstructors()) {
+    private Object buildInfoPacket(Object action, List<Object> players) throws Exception {
+        for (java.lang.reflect.Constructor<?> ctor : this.packetInfoClass.getConstructors()) {
             Class<?>[] params = ctor.getParameterTypes();
-            if (params.length == 2
-                    && params[0] == this.enumPlayerInfoActionClass
+            if (params.length == 2 && params[0] == this.enumPlayerInfoActionClass
                     && Iterable.class.isAssignableFrom(params[1])) {
                 return ctor.newInstance(action, players);
             }
         }
         if (!players.isEmpty()) {
-            for (java.lang.reflect.Constructor<?> ctor
-                    : this.packetInfoClass.getConstructors()) {
+            for (java.lang.reflect.Constructor<?> ctor : this.packetInfoClass.getConstructors()) {
                 Class<?>[] params = ctor.getParameterTypes();
-                if (params.length == 2
-                        && params[0] == this.enumPlayerInfoActionClass
+                if (params.length == 2 && params[0] == this.enumPlayerInfoActionClass
                         && params[1] == this.entityPlayerClass) {
                     return ctor.newInstance(action, players.get(0));
                 }

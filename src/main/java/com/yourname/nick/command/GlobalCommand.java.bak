@@ -32,7 +32,8 @@ public final class GlobalCommand implements TabExecutor {
         }
         Player player = (Player) sender;
         if (!this.luckPerms.isRanked(player)) {
-            player.sendMessage(ChatColor.RED + "You need the " + ChatColor.GOLD
+            player.sendMessage(ChatColor.RED
+                    + "You need the " + ChatColor.GOLD
                     + this.luckPerms.requiredGroup() + ChatColor.RED
                     + " rank or above to use /g.");
             return true;
@@ -51,8 +52,10 @@ public final class GlobalCommand implements TabExecutor {
         this.plugin.getServer().broadcastMessage(formatted);
         return true;
     }
+
     @Override
-    public List<String> onTabComplete(CommandSender s, Command c, String a, String[] args) {
+    public List<String> onTabComplete(CommandSender s, Command c,
+                                      String a, String[] args) {
         return Collections.emptyList();
     }
 }

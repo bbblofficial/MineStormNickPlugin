@@ -109,12 +109,12 @@ public final class MineStormNickPlugin extends JavaPlugin {
         pm.registerEvents(new WorldListener(this.disguises), this);
         pm.registerEvents(new ChatListener(getConfig(), this.registry, this.bedwars), this);
 
-        bind("nick",                 new NickCommand(this, this.messages, this.bookGui,
-                                                     this.disguises, this.skins, this.validator));
-        bind("realname",             new RealNameCommand(this, this.messages,
-                                                         this.registry, this.storage));
-        bind("minestormnicksystem",  new MineStormNickSystemCommand(this));
-        bind("g",                    new GlobalCommand(this, this.messages, this.luckPerms));
+        bind("nick",                new NickCommand(this, this.messages, this.bookGui,
+                                                    this.disguises, this.skins, this.validator));
+        bind("realname",            new RealNameCommand(this, this.messages,
+                                                        this.registry, this.storage));
+        bind("minestormnicksystem", new MineStormNickSystemCommand(this));
+        bind("g",                   new GlobalCommand(this, this.messages, this.luckPerms));
 
         scheduleTasks();
 

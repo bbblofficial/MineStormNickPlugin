@@ -149,20 +149,16 @@ public final class MineStormNickPlugin extends JavaPlugin {
             saveResourceIfMissing("gui.yml");
             saveResourceIfMissing("messages.yml");
             saveResourceIfMissing("names.yml");
-
             this.messages  = new Messages(this);
             this.guiConfig = new GuiConfig(this);
             YamlConfiguration names = loadNames();
-
             this.validator = new NameValidator(names, this.registry);
             this.generator = new NameGenerator(names, this.validator);
             this.bedwars   = new BedwarsLevelHook(getConfig());
             this.luckPerms.reload(getConfig());
-
             this.bookGui = new BookGUIManager(
                     this, this.messages, this.guiConfig, this.disguises,
                     this.skins, this.generator, this.validator, this.storage);
-
             cancelTasks();
             scheduleTasks();
             getLogger().info("MineStormNickSystem reloaded.");
@@ -186,7 +182,6 @@ public final class MineStormNickPlugin extends JavaPlugin {
                     @Override public void run() { registry.prunePending(60000L); }
                 }, 1200L, 1200L);
     }
-
     private void cancelTasks() {
         if (this.actionBarTask != null) {
             try { this.actionBarTask.cancel(); } catch (Throwable ignored) { }
@@ -197,13 +192,11 @@ public final class MineStormNickPlugin extends JavaPlugin {
             this.pruneTask = null;
         }
     }
-
     private YamlConfiguration loadNames() {
         File file = new File(getDataFolder(), "names.yml");
         if (!file.exists()) saveResource("names.yml", false);
         return YamlConfiguration.loadConfiguration(file);
     }
-
     private void saveResourceIfMissing(String name) {
         File f = new File(getDataFolder(), name);
         if (!f.exists()) {
@@ -211,7 +204,6 @@ public final class MineStormNickPlugin extends JavaPlugin {
             catch (IllegalArgumentException ignored) { }
         }
     }
-
     private void bind(String name, TabExecutor executor) {
         PluginCommand command = getCommand(name);
         if (command == null) {

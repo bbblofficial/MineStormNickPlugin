@@ -17,6 +17,7 @@ public final class MineStormNickSystemCommand implements TabExecutor {
     public MineStormNickSystemCommand(MineStormNickPlugin plugin) {
         this.plugin = plugin;
     }
+
     @Override
     public boolean onCommand(CommandSender sender, Command command,
                              String label, String[] args) {
@@ -32,8 +33,10 @@ public final class MineStormNickSystemCommand implements TabExecutor {
         sender.sendMessage(ChatColor.GREEN + "MineStormNickSystem reloaded.");
         return true;
     }
+
     @Override
-    public List<String> onTabComplete(CommandSender s, Command c, String a, String[] args) {
+    public List<String> onTabComplete(CommandSender s, Command c,
+                                      String a, String[] args) {
         if (args.length == 1) {
             String typed = args[0].toLowerCase(Locale.ROOT);
             if ("reload".startsWith(typed)) return Arrays.asList("reload");
