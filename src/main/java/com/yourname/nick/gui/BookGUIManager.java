@@ -346,8 +346,9 @@ public final class BookGUIManager {
     /* ------------------------------------------------------------------ */
 
     private void openBook(Player player, BaseComponent[] page) {
-        VirtualBook.open(player,
-                VirtualBook.buildComponents(BOOK_TITLE, BOOK_AUTHOR, page));
+        org.bukkit.inventory.ItemStack book =
+                VirtualBook.buildComponents(BOOK_TITLE, BOOK_AUTHOR, page);
+        VirtualBook.open(player, book, page);
     }
 
     private static BaseComponent blank() {
