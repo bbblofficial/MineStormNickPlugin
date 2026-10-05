@@ -1,32 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MineStormNickSystem - SQLite AbstractMethodError fixer.
+MineStormNickSystem - complete fixer (final).
 
-Root cause
-----------
-Spigot 1.8.8 ships org.sqlite.JDBC:3.7.2. That driver does not implement
-java.sql.Connection#isValid(int). On Java 17+ the JVM enforces the
-interface contract and every call throws:
+Writes every affected file verbatim and is idempotent. Running it again
+reports SKIP for any file that already matches.
 
-    java.lang.AbstractMethodError: Receiver class org.sqlite.Conn does not
-    define or inherit an implementation of the resolved method
-    'abstract boolean isValid(int)' of interface java.sql.Connection
-
-The previous StorageManager.openConnection() called connection.isValid(2)
-on every access, so every insert/query after the first failed.
-
-What this script does
----------------------
-1.  Rewrites StorageManager.java so it:
-      - probes the live connection with a trivial `SELECT 1` instead of
-        isValid(int);
-      - retries a failed task once after closing the bad connection;
-      - enables SQLite PRAGMA journal_mode=WAL and busy_timeout=5000.
-2.  Patches pom.xml to add org.xerial:sqlite-jdbc:3.44.1.0 (compiled for
-    Java 8, has a working isValid) and shades it under
-    com.yourname.nick.libs.sqlite so the server's copy is never used.
-3.  Idempotent: running it again reports SKIP for anything already fixed.
+What it fixes
+-------------
+A.  Action bar indicator never reaches chat. On Spigot 1.8.8 the plugin now
+    builds a PacketPlayOutChat(component, (byte) 2) via NMS reflection, which
+    is the only path that reaches the action bar on that server. The previous
+    Bungee#sendMessage(ChatMessageType, ...) overload does not exist on 1.8.8,
+    so it fell back to chat and Bukkit deduplicated the text as "… (4)".
+B.  World restriction removed entirely. WorldRules.isActive() returns true.
+C.  messages.yml no longer says "in games only". gui.yml confirmation page
+    no longer mentions lobbies.
+D.  SQLite AbstractMethodError fixed. StorageManager probes the connection
+    with SELECT 1 instead of Connection#isValid(int), which the 3.7.2 driver
+    bundled with Spigot 1.8.8 does not implement. A one-shot retry is added.
+    pom.xml gets sqlite-jdbc 3.44.1.0 shaded under a private package.
+E.  PacketManager uses the 1.8.8-correct tab-list update: EntityPlayer.listName
+    is set, GameProfile.name is permanently updated, and a
+    PacketPlayOutPlayerInfo with UPDATE_DISPLAY_NAME is broadcast.
+F.  Rename to MineStormNickSystem / MineStormNickPlugin; reload command is
+    /minestormnicksystem (alias /msns). Old NickPlugin.java is renamed and
+    NickSystemCommand.java is deleted.
+G.  gui.yml is fully externalised and hot-reloadable.
+H.  LuckPerms-based /g for the "prime" group (configurable).
 
 Run from the plugin project root (folder containing pom.xml).
 """
@@ -36,7 +37,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -53,22 +53,29 @@ def find_project_root() -> Path:
 
 ROOT = find_project_root()
 SRC_JAVA = ROOT / "src" / "main" / "java"
+RESOURCES = ROOT / "src" / "main" / "resources"
 
 
 def find_package_dir() -> Path:
-    for name in ("MineStormNickPlugin.java", "NickPlugin.java"):
-        preferred = SRC_JAVA / "com" / "yourname" / "nick"
-        if (preferred / name).is_file():
-            return preferred
-    for name in ("MineStormNickPlugin.java", "NickPlugin.java"):
-        for path in SRC_JAVA.rglob(name):
-            return path.parent
-    return SRC_JAVA / "com" / "yourname" / "nick"
+    preferred = SRC_JAVA / "com" / "yourname" / "nick"
+    if (preferred / "MineStormNickPlugin.java").is_file():
+        return preferred
+    if (preferred / "NickPlugin.java").is_file():
+        return preferred
+    for path in SRC_JAVA.rglob("MineStormNickPlugin.java"):
+        return path.parent
+    for path in SRC_JAVA.rglob("NickPlugin.java"):
+        return path.parent
+    return preferred
 
 
 PACKAGE_DIR = find_package_dir()
 
 LOG: list[tuple[str, str]] = []
+CREATED: list[str] = []
+UPDATED: list[str] = []
+SKIPPED: list[str] = []
+DELETED: list[str] = []
 
 
 def log(level: str, message: str) -> None:
@@ -110,9 +117,584 @@ def write_text(path: Path, content: str, *, dry: bool, backup: bool) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  StorageManager.java  (full, portable replacement)
+#  JAVA SOURCES (verbatim, final versions)
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ── task/ActionBarTask.java ────────────────────────────────────────────────
+JAVA_ACTIONBAR = r'''package com.yourname.nick.task;
+
+import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.disguise.DisguiseRegistry;
+import com.yourname.nick.model.DisguiseProfile;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import net.md_5.bungee.api.chat.BaseComponent;
+import net.md_5.bungee.api.chat.TextComponent;
+import net.md_5.bungee.chat.ComponentSerializer;
+import org.bukkit.ChatColor;
+import org.bukkit.entity.Player;
+
+/**
+ * Sends the "you are nicked" indicator through the real ACTION BAR only.
+ *
+ * <p>The Bungee ChatMessageType overload of Player.Spigot#sendMessage does
+ * not exist on Spigot 1.8.8, so a previous revision fell back to the plain
+ * chat overload and Bukkit deduplicated the message as "… (4)". This
+ * version sends PacketPlayOutChat(component, (byte) 2) via NMS on 1.8.8
+ * and uses the Bungee overload only when the server actually exposes it.</p>
+ */
+public final class ActionBarTask implements Runnable {
+
+    /* ---------------- NMS handles (1.8.8) ---------------- */
+
+    private static final Class<?>   CHAT_PACKET_CLASS;
+    private static final Constructor<?> CHAT_PACKET_CTOR;
+    private static final Method     GET_HANDLE;
+    private static final Method     SEND_PACKET;
+    private static final Method     FROM_JSON;
+    private static final Field      CONNECTION_FIELD;
+
+    static {
+        Class<?> chatPacket = null;
+        Constructor<?> ctor = null;
+        Method getHandle = null;
+        Method sendPacket = null;
+        Method fromJson = null;
+        Field  connField = null;
+        try {
+            chatPacket = Class.forName("net.minecraft.server.v1_8_R3.PacketPlayOutChat");
+            Class<?> chatComp = Class.forName("net.minecraft.server.v1_8_R3.IChatBaseComponent");
+            Class<?> packet   = Class.forName("net.minecraft.server.v1_8_R3.Packet");
+            ctor = chatPacket.getConstructor(chatComp, byte.class);
+
+            Class<?> craftPlayer =
+                    Class.forName("org.bukkit.craftbukkit.v1_8_R3.entity.CraftPlayer");
+            getHandle = craftPlayer.getMethod("getHandle");
+
+            Class<?> entityPlayer =
+                    Class.forName("net.minecraft.server.v1_8_R3.EntityPlayer");
+            connField = entityPlayer.getField("playerConnection");
+
+            Class<?> playerConn =
+                    Class.forName("net.minecraft.server.v1_8_R3.PlayerConnection");
+            sendPacket = playerConn.getMethod("sendPacket", packet);
+
+            Class<?> serializer = Class.forName(
+                    "net.minecraft.server.v1_8_R3.IChatBaseComponent$ChatSerializer");
+            fromJson = serializer.getMethod("a", String.class);
+        } catch (Throwable ignored) {
+            // Not running on 1.8.8 - use the Bungee overload instead.
+        }
+        CHAT_PACKET_CLASS   = chatPacket;
+        CHAT_PACKET_CTOR    = ctor;
+        GET_HANDLE          = getHandle;
+        SEND_PACKET         = sendPacket;
+        FROM_JSON           = fromJson;
+        CONNECTION_FIELD    = connField;
+    }
+
+    private final MineStormNickPlugin plugin;
+    private final DisguiseRegistry registry;
+    private final String indicator;
+    private final boolean showWhenDormant;
+
+    public ActionBarTask(MineStormNickPlugin plugin,
+                         DisguiseRegistry registry,
+                         String indicator,
+                         boolean showWhenDormant) {
+        this.plugin = plugin;
+        this.registry = registry;
+        this.indicator = ChatColor.translateAlternateColorCodes(
+                '&', indicator == null ? "" : indicator);
+        this.showWhenDormant = showWhenDormant;
+    }
+
+    @Override
+    public void run() {
+        if (this.indicator.isEmpty()) return;
+        for (DisguiseProfile profile : this.registry.all()) {
+            Player player = this.plugin.getServer().getPlayer(profile.realUuid());
+            if (player == null || !player.isOnline()) continue;
+            if (!profile.active() && !this.showWhenDormant) continue;
+            try {
+                sendActionBar(player, this.indicator);
+            } catch (Throwable ignored) {
+                // Never let one player's connection kill the task.
+            }
+        }
+    }
+
+    /** Sends {@code text} to the action bar. Never falls back to chat. */
+    private static void sendActionBar(Player player, String text) {
+        // Preferred path (Paper 1.12+): real Bungee action-bar overload.
+        try {
+            Class<?> spigot = Class.forName("org.bukkit.entity.Player$Spigot");
+            Class<?> type   = Class.forName("net.md_5.bungee.api.ChatMessageType");
+            Method m = spigot.getMethod("sendMessage", type, BaseComponent[].class);
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            Object actionBar = Enum.valueOf(
+                    (Class<? extends Enum>) type, "ACTION_BAR");
+            m.invoke(player.spigot(), actionBar,
+                    TextComponent.fromLegacyText(text));
+            return;
+        } catch (Throwable notAvailable) {
+            // Fall through to the 1.8.8 packet path.
+        }
+
+        if (CHAT_PACKET_CTOR == null || GET_HANDLE == null
+                || SEND_PACKET == null || CONNECTION_FIELD == null) {
+            // Cannot reach the action bar on this fork; drop the update
+            // silently instead of polluting chat.
+            return;
+        }
+
+        try {
+            Object handle = GET_HANDLE.invoke(player);
+            String json = ComponentSerializer.toString(
+                    TextComponent.fromLegacyText(text));
+            Object component = FROM_JSON.invoke(null, json);
+            Object packet = CHAT_PACKET_CTOR.newInstance(component, (byte) 2);
+            Object connection = CONNECTION_FIELD.get(handle);
+            SEND_PACKET.invoke(connection, packet);
+        } catch (Throwable ignored) {
+            // Silently drop on failure.
+        }
+    }
+}
+'''
+
+# ── disguise/WorldRules.java ───────────────────────────────────────────────
+JAVA_WORLD_RULES = r'''package com.yourname.nick.disguise;
+
+import java.util.logging.Logger;
+import org.bukkit.configuration.ConfigurationSection;
+
+/**
+ * World restrictions were removed. Nicknames are active everywhere the
+ * moment they are applied, matching Hypixel's behaviour.
+ *
+ * <p>Kept as a class so existing callers still compile. The
+ * {@code worlds:} section in config.yml is intentionally ignored.</p>
+ */
+public final class WorldRules {
+
+    private static final WorldRules INSTANCE = new WorldRules();
+
+    private WorldRules() {
+    }
+
+    public static WorldRules fromConfig(ConfigurationSection config, Logger logger) {
+        return INSTANCE;
+    }
+
+    public boolean isActive(String worldName) {
+        return true;
+    }
+}
+'''
+
+# ── gui/GuiConfig.java ─────────────────────────────────────────────────────
+JAVA_GUI_CONFIG = r'''package com.yourname.nick.gui;
+
+import java.io.File;
+import java.util.Collections;
+import java.util.List;
+import org.bukkit.ChatColor;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.java.JavaPlugin;
+
+/** Typed reader for gui.yml. All strings are colour-translated on read. */
+public final class GuiConfig {
+
+    public static final class Button {
+        private final String label;
+        private final String command;
+        private final String hover;
+        public Button(String label, String command, String hover) {
+            this.label = colorize(label);
+            this.command = command == null ? "" : command;
+            this.hover = colorize(hover);
+        }
+        public String label()   { return label; }
+        public String command() { return command; }
+        public String hover()   { return hover; }
+    }
+
+    private final YamlConfiguration yaml;
+
+    public GuiConfig(JavaPlugin plugin) {
+        File f = new File(plugin.getDataFolder(), "gui.yml");
+        if (!f.exists()) {
+            try { plugin.saveResource("gui.yml", false); }
+            catch (Throwable ignored) { }
+        }
+        this.yaml = YamlConfiguration.loadConfiguration(f);
+    }
+
+    public String title()  { return colorize(this.yaml.getString("book.title",  "Nickname Setup")); }
+    public String author() { return colorize(this.yaml.getString("book.author", "MineStormNickSystem")); }
+
+    public String get(String path) {
+        return colorize(this.yaml.getString(path, ""));
+    }
+
+    public List<String> list(String path) {
+        return colorizeList(this.yaml.getStringList(path));
+    }
+    public List<String> body(String page) {
+        return colorizeList(this.yaml.getStringList(page + ".body"));
+    }
+    public List<String> footer(String page) {
+        return colorizeList(this.yaml.getStringList(page + ".footer"));
+    }
+
+    public ChatColor color(String page) {
+        String raw = this.yaml.getString(page + "-color", "BLACK");
+        try { return ChatColor.valueOf(raw.toUpperCase()); }
+        catch (Throwable t) { return ChatColor.BLACK; }
+    }
+    public ChatColor style(String page) {
+        String raw = this.yaml.getString(page + "-style", "");
+        if (raw == null || raw.isEmpty()) return null;
+        try { return ChatColor.valueOf(raw.toUpperCase()); }
+        catch (Throwable t) { return null; }
+    }
+
+    public Button button(String key) {
+        String base = "buttons." + key + ".";
+        return new Button(
+                this.yaml.getString(base + "label", ""),
+                this.yaml.getString(base + "command", ""),
+                this.yaml.getString(base + "hover", ""));
+    }
+    public Button entry(String page, String key) {
+        String base = page + ".entries." + key + ".";
+        return new Button(
+                this.yaml.getString(base + "label", ""),
+                "",
+                this.yaml.getString(base + "hover", ""));
+    }
+    public Button pageButton(String page, String key) {
+        String base = page + ".buttons." + key + ".";
+        return new Button(
+                this.yaml.getString(base + "label", ""),
+                "",
+                this.yaml.getString(base + "hover", ""));
+    }
+
+    public static String colorize(String s) {
+        return ChatColor.translateAlternateColorCodes('&', s == null ? "" : s);
+    }
+    private static List<String> colorizeList(List<String> in) {
+        if (in == null) return Collections.emptyList();
+        java.util.List<String> out = new java.util.ArrayList<String>(in.size());
+        for (String s : in) out.add(colorize(s));
+        return out;
+    }
+
+    public String format(String raw, String... pairs) {
+        if (raw == null) return "";
+        String out = raw;
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            String key = pairs[i];
+            String val = pairs[i + 1] == null ? "" : pairs[i + 1];
+            out = out.replace("%" + key + "%", val);
+        }
+        return colorize(out);
+    }
+}
+'''
+
+# ── gui/BookGUIManager.java ────────────────────────────────────────────────
+JAVA_BOOK_GUI = r'''package com.yourname.nick.gui;
+
+import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.disguise.DisguiseManager;
+import com.yourname.nick.message.Messages;
+import com.yourname.nick.model.DisguiseProfile;
+import com.yourname.nick.model.NickRecord;
+import com.yourname.nick.model.Rank;
+import com.yourname.nick.model.SkinData;
+import com.yourname.nick.name.NameGenerator;
+import com.yourname.nick.name.NameValidator;
+import com.yourname.nick.skin.SkinCacheManager;
+import com.yourname.nick.storage.StorageManager;
+import com.yourname.nick.util.Async;
+import com.yourname.nick.util.VirtualBook;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
+import net.md_5.bungee.api.chat.BaseComponent;
+import net.md_5.bungee.api.chat.ClickEvent;
+import net.md_5.bungee.api.chat.HoverEvent;
+import net.md_5.bungee.api.chat.TextComponent;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+
+public final class BookGUIManager {
+
+    private final MineStormNickPlugin plugin;
+    private final Messages messages;
+    private final GuiConfig gui;
+    private final DisguiseManager disguises;
+    private final SkinCacheManager skins;
+    private final NameGenerator generator;
+    private final NameValidator validator;
+    private final StorageManager storage;
+
+    private final Map<UUID, NickSession> sessions =
+            new ConcurrentHashMap<UUID, NickSession>();
+
+    public BookGUIManager(MineStormNickPlugin plugin,
+                          Messages messages,
+                          GuiConfig gui,
+                          DisguiseManager disguises,
+                          SkinCacheManager skins,
+                          NameGenerator generator,
+                          NameValidator validator,
+                          StorageManager storage) {
+        this.plugin = plugin;
+        this.messages = messages;
+        this.gui = gui;
+        this.disguises = disguises;
+        this.skins = skins;
+        this.generator = generator;
+        this.validator = validator;
+        this.storage = storage;
+    }
+
+    public void open(final Player player) {
+        this.storage.findLastSetForPlayer(player.getUniqueId()).whenComplete(
+                new BiConsumer<Optional<NickRecord>, Throwable>() {
+            @Override public void accept(final Optional<NickRecord> last, final Throwable error) {
+                Async.main(BookGUIManager.this.plugin, new Runnable() {
+                    @Override public void run() {
+                        if (!player.isOnline()) return;
+                        NickRecord history = (error == null && last != null && last.isPresent())
+                                ? last.get() : null;
+                        sessions.put(player.getUniqueId(), new NickSession(history));
+                        showIntro(player);
+                    }
+                });
+            }
+        });
+    }
+
+    public void handle(Player player, String[] args) {
+        NickSession session = this.sessions.get(player.getUniqueId());
+        if (session == null) { open(player); return; }
+        if (args.length == 0) { showIntro(player); return; }
+        String sub = args[0].toLowerCase(Locale.ROOT);
+        if ("rank".equals(sub))        chooseRank(player, session, args);
+        else if ("skin".equals(sub))   chooseSkin(player, session, args);
+        else if ("name".equals(sub))   chooseName(player, session, args);
+        else if ("use".equals(sub))    useRolledName(player, session);
+        else if ("reroll".equals(sub)) rollName(player, session);
+        else if ("close".equals(sub))  { }
+        else                           showIntro(player);
+    }
+
+    public void applyCustomName(Player player, String nick) {
+        NickSession session = this.sessions.get(player.getUniqueId());
+        Optional<DisguiseProfile> current = this.disguises.profile(player.getUniqueId());
+
+        Rank rank = session != null ? session.rank()
+                : (current.isPresent() ? current.get().rank() : Rank.DEFAULT);
+        SkinData skin = session != null ? session.skin()
+                : (current.isPresent() ? current.get().skin() : SkinData.normal());
+
+        NameValidator.Result result = this.validator.validate(nick, player);
+        if (result != NameValidator.Result.VALID) {
+            showName(player, session != null ? session : new NickSession(null));
+            return;
+        }
+        this.disguises.apply(player, nick, rank, skin);
+        this.sessions.remove(player.getUniqueId());
+        showFinished(player, nick);
+    }
+
+    public void clearSession(UUID uuid) { this.sessions.remove(uuid); }
+    public void clear()                 { this.sessions.clear(); }
+
+    /* -------- Pages -------- */
+
+    private void showIntro(Player player) {
+        List<BaseComponent> out = new ArrayList<BaseComponent>();
+        out.add(line("\u00a73\u00a7lMineStorm Nickname Setup"));
+        out.add(blank());
+        GuiConfig.Button b = gui.button("start");
+        out.add(button(b.label(), b.command(), b.hover()));
+        openBook(player, out);
+    }
+
+    private void showRankPicker(Player player) {
+        List<BaseComponent> out = new ArrayList<BaseComponent>();
+        for (String raw : gui.body("rank")) out.add(line(raw));
+        for (Rank r : Rank.values()) {
+            GuiConfig.Button e = gui.entry("rank", r.name());
+            String label = empty(e.label()) ? "\u00a78\u27a4 \u00a77" + r.label() : e.label();
+            String hover = empty(e.hover()) ? "Use " + r.label() : e.hover();
+            out.add(button(label, "/nick ui rank " + r.name(), hover));
+        }
+        openBook(player, out);
+    }
+
+    private void showSkin(Player player, NickSession session) {
+        List<BaseComponent> out = new ArrayList<BaseComponent>();
+        for (String raw : gui.body("skin")) out.add(line(raw));
+        addEntry(out, "skin", "normal",  "/nick ui skin normal");
+        addEntry(out, "skin", "default", "/nick ui skin default");
+        addEntry(out, "skin", "random",  "/nick ui skin random");
+        if (session.history() != null) addEntry(out, "skin", "reuse", "/nick ui skin reuse");
+        openBook(player, out);
+    }
+
+    private void showName(Player player, NickSession session) {
+        List<BaseComponent> out = new ArrayList<BaseComponent>();
+        for (String raw : gui.body("name")) out.add(line(raw));
+        addEntry(out, "name", "random", "/nick ui name random");
+        if (session.history() != null) addEntry(out, "name", "reuse", "/nick ui name reuse");
+        for (String raw : gui.footer("name")) out.add(line(raw));
+        openBook(player, out);
+    }
+
+    private void showRolledName(Player player, NickSession session) {
+        String name = session.pendingName();
+        if (name == null) { showName(player, session); return; }
+        List<BaseComponent> out = new ArrayList<BaseComponent>();
+        for (String raw : gui.body("rolled")) {
+            out.add(line(gui.format(raw, "name", name)));
+        }
+        GuiConfig.Button use   = gui.pageButton("rolled", "use");
+        GuiConfig.Button again = gui.pageButton("rolled", "again");
+        out.add(button(
+                empty(use.label()) ? "\u00a7a\u00a7l[USE NAME]" : use.label(),
+                "/nick ui use",
+                gui.format(empty(use.hover()) ? "Nick as %name%" : use.hover(),
+                        "name", name)));
+        out.add(button(
+                empty(again.label()) ? "\u00a7c\u00a7l[TRY AGAIN]" : again.label(),
+                "/nick ui reroll",
+                empty(again.hover()) ? "Generate a different name" : again.hover()));
+        openBook(player, out);
+    }
+
+    private void showFinished(Player player, String nick) {
+        Rank rank = Rank.DEFAULT;
+        Optional<DisguiseProfile> prof = disguises.profile(player.getUniqueId());
+        if (prof.isPresent()) rank = prof.get().rank();
+        List<BaseComponent> out = new ArrayList<BaseComponent>();
+        for (String raw : gui.body("done")) {
+            out.add(line(gui.format(raw,
+                    "name", nick, "rank", rank.label(), "player", player.getName())));
+        }
+        openBook(player, out);
+    }
+
+    /* -------- Step handlers -------- */
+
+    private void chooseRank(Player player, NickSession session, String[] args) {
+        if (args.length < 2) { showRankPicker(player); return; }
+        Optional<Rank> rank = Rank.parse(args[1]);
+        if (!rank.isPresent()) { showRankPicker(player); return; }
+        session.rank(rank.get());
+        session.step(NickSession.Step.SKIN);
+        showSkin(player, session);
+    }
+
+    private void chooseSkin(Player player, NickSession session, String[] args) {
+        if (args.length < 2) { showSkin(player, session); return; }
+        String choice = args[1].toLowerCase(Locale.ROOT);
+        if ("normal".equals(choice))       session.skin(SkinData.normal());
+        else if ("default".equals(choice)) session.skin(SkinData.defaultSkin());
+        else if ("random".equals(choice)) {
+            Optional<SkinData> pick = this.skins.randomPoolSkin();
+            session.skin(pick.isPresent() ? pick.get() : SkinData.defaultSkin());
+        } else if ("reuse".equals(choice)) {
+            if (session.history() == null) { showSkin(player, session); return; }
+            session.skin(session.history().toSkinData());
+        } else { showSkin(player, session); return; }
+        session.step(NickSession.Step.NAME);
+        showName(player, session);
+    }
+
+    private void chooseName(Player player, NickSession session, String[] args) {
+        if (args.length < 2) { showName(player, session); return; }
+        String choice = args[1].toLowerCase(Locale.ROOT);
+        if ("random".equals(choice))      rollName(player, session);
+        else if ("reuse".equals(choice)) {
+            if (session.history() == null) { showName(player, session); return; }
+            finish(player, session, session.history().nickname());
+        } else showName(player, session);
+    }
+
+    private void useRolledName(Player player, NickSession session) {
+        if (session.pendingName() == null) { showName(player, session); return; }
+        finish(player, session, session.pendingName());
+    }
+
+    private void rollName(Player player, NickSession session) {
+        Optional<String> name = this.generator.generate(player);
+        if (!name.isPresent()) { showName(player, session); return; }
+        session.pendingName(name.get());
+        session.step(NickSession.Step.ROLLER);
+        showRolledName(player, session);
+    }
+
+    private void finish(Player player, NickSession session, String nick) {
+        NameValidator.Result result = this.validator.validate(nick, player);
+        if (result != NameValidator.Result.VALID) {
+            if (session.step() == NickSession.Step.ROLLER) rollName(player, session);
+            else { session.step(NickSession.Step.NAME); showName(player, session); }
+            return;
+        }
+        this.disguises.apply(player, nick, session.rank(), session.skin());
+        this.sessions.remove(player.getUniqueId());
+        showFinished(player, nick);
+    }
+
+    /* -------- Helpers -------- */
+
+    private void addEntry(List<BaseComponent> out, String page,
+                          String key, String command) {
+        GuiConfig.Button e = gui.entry(page, key);
+        String label = empty(e.label()) ? ("\u00a78\u27a4 \u00a77" + key) : e.label();
+        String hover = empty(e.hover()) ? key : e.hover();
+        out.add(button(label, command, hover));
+    }
+
+    private void openBook(Player player, List<BaseComponent> out) {
+        BaseComponent[] page = out.toArray(new BaseComponent[out.size()]);
+        ItemStack book = VirtualBook.buildComponents(gui.title(), gui.author(), page);
+        VirtualBook.open(player, book, page);
+    }
+
+    private static boolean empty(String s) { return s == null || s.isEmpty(); }
+    private static BaseComponent blank() {
+        return new TextComponent(TextComponent.fromLegacyText("\n"));
+    }
+    private static BaseComponent line(String raw) {
+        return new TextComponent(TextComponent.fromLegacyText(
+                (raw == null ? "" : raw) + "\n"));
+    }
+    private static BaseComponent button(String label, String command, String hover) {
+        TextComponent c = new TextComponent(TextComponent.fromLegacyText(
+                "\u00a7a" + label + "\n"));
+        c.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command));
+        c.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                TextComponent.fromLegacyText("\u00a77" + hover)));
+        return c;
+    }
+}
+'''
+
+# ── storage/StorageManager.java ────────────────────────────────────────────
 JAVA_STORAGE_MANAGER = r'''package com.yourname.nick.storage;
 
 import com.yourname.nick.MineStormNickPlugin;
@@ -136,21 +718,6 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
-/**
- * Thread-confined SQLite/MySQL storage.
- *
- * <p><b>Java 17 fix:</b> {@link Connection#isValid(int)} is not implemented
- * by the SQLite driver bundled with Spigot 1.8.8
- * ({@code org.sqlite.JDBC:3.7.2}). Under Java 17 the JVM throws
- * {@link AbstractMethodError} the moment that method is invoked. This
- * class therefore performs the connection check with
- * {@code isClosed()} plus a trivial {@code SELECT 1} probe, which every
- * driver from Java 6 onwards supports.</p>
- *
- * <p>If a task fails for any reason, the connection is closed and the task
- * is retried once. That keeps a single transient failure from killing the
- * entire storage subsystem.</p>
- */
 public final class StorageManager {
 
     private static final String COLUMNS =
@@ -211,17 +778,11 @@ public final class StorageManager {
         });
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Public API                                                        */
-    /* ------------------------------------------------------------------ */
-
     public CompletableFuture<Void> initialize() {
         return submit(new SqlTask<Void>() {
             @Override public Void run(Connection conn) throws SQLException {
                 try (Statement s = conn.createStatement()) {
-                    for (String sql : schema()) {
-                        s.execute(sql);
-                    }
+                    for (String sql : schema()) s.execute(sql);
                 }
                 return null;
             }
@@ -253,21 +814,17 @@ public final class StorageManager {
 
     public CompletableFuture<Optional<NickRecord>> findLatestForPlayer(UUID uuid) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
-                + "WHERE real_uuid = ? ORDER BY id DESC LIMIT 1",
-                uuid.toString());
+                + "WHERE real_uuid = ? ORDER BY id DESC LIMIT 1", uuid.toString());
     }
-
     public CompletableFuture<Optional<NickRecord>> findLastSetForPlayer(UUID uuid) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE real_uuid = ? AND action = 'SET' ORDER BY id DESC LIMIT 1",
                 uuid.toString());
     }
-
     public CompletableFuture<Optional<NickRecord>> findLatestByNickname(String nickname) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE LOWER(nickname) = LOWER(?) AND action = 'SET' "
-                + "ORDER BY id DESC LIMIT 1",
-                nickname);
+                + "ORDER BY id DESC LIMIT 1", nickname);
     }
 
     public void close() {
@@ -275,9 +832,7 @@ public final class StorageManager {
             this.executor.execute(new Runnable() {
                 @Override public void run() { closeConnection(); }
             });
-        } catch (RejectedExecutionException ignored) {
-            return;
-        }
+        } catch (RejectedExecutionException ignored) { return; }
         this.executor.shutdown();
         try {
             if (!this.executor.awaitTermination(5L, TimeUnit.SECONDS)) {
@@ -291,38 +846,25 @@ public final class StorageManager {
         }
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Internals                                                         */
-    /* ------------------------------------------------------------------ */
-
     @FunctionalInterface
-    public interface SqlTask<T> {
-        T run(Connection connection) throws SQLException;
-    }
+    public interface SqlTask<T> { T run(Connection connection) throws SQLException; }
 
     private <T> CompletableFuture<T> submit(final SqlTask<T> task) {
         final CompletableFuture<T> future = new CompletableFuture<T>();
         try {
             this.executor.execute(new Runnable() {
                 @Override public void run() {
-                    try {
-                        future.complete(runWithRetry(task));
-                    } catch (Throwable t) {
-                        future.completeExceptionally(t);
-                    }
+                    try { future.complete(runWithRetry(task)); }
+                    catch (Throwable t) { future.completeExceptionally(t); }
                 }
             });
-        } catch (RejectedExecutionException e) {
-            future.completeExceptionally(e);
-        }
+        } catch (RejectedExecutionException e) { future.completeExceptionally(e); }
         return future;
     }
 
-    /** Runs the task; on failure closes the connection and retries once. */
     private <T> T runWithRetry(SqlTask<T> task) throws SQLException {
-        try {
-            return task.run(openConnection());
-        } catch (Throwable first) {
+        try { return task.run(openConnection()); }
+        catch (Throwable first) {
             closeConnection();
             this.plugin.getLogger().log(Level.FINE,
                     "DB operation failed, retrying once: " + first);
@@ -337,33 +879,20 @@ public final class StorageManager {
                 try (PreparedStatement ps = conn.prepareStatement(sql)) {
                     ps.setString(1, parameter);
                     try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) {
-                            return Optional.of(map(rs));
-                        }
-                        return Optional.<NickRecord>empty();
+                        return rs.next() ? Optional.of(map(rs))
+                                         : Optional.<NickRecord>empty();
                     }
                 }
             }
         });
     }
 
-    /**
-     * Returns a healthy JDBC connection.
-     *
-     * <p><b>Why not {@code Connection.isValid(int)}?</b> The SQLite driver
-     * bundled with Spigot 1.8.8 ({@code org.sqlite.JDBC:3.7.2}) does not
-     * implement that method. On Java 17 the JVM enforces the interface
-     * contract and throws {@link AbstractMethodError}. We therefore probe
-     * the connection with a trivial {@code SELECT 1} which every driver
-     * since Java 6 supports.</p>
-     */
     private Connection openConnection() throws SQLException {
         if (this.connection != null && !this.connection.isClosed()
                 && probe(this.connection)) {
             return this.connection;
         }
         closeConnection();
-
         try {
             Class.forName(this.mysql
                     ? "com.mysql.cj.jdbc.Driver"
@@ -371,11 +900,9 @@ public final class StorageManager {
         } catch (ClassNotFoundException e) {
             throw new SQLException("JDBC driver not available on this server", e);
         }
-
         this.connection = this.mysql
                 ? DriverManager.getConnection(this.jdbcUrl, this.username, this.password)
                 : DriverManager.getConnection(this.jdbcUrl);
-
         if (!this.mysql) {
             try (Statement s = this.connection.createStatement()) {
                 s.execute("PRAGMA journal_mode=WAL");
@@ -385,7 +912,6 @@ public final class StorageManager {
         return this.connection;
     }
 
-    /** Portable liveness probe; never calls isValid(int). */
     private static boolean probe(Connection connection) {
         try (Statement s = connection.createStatement()) {
             s.execute("SELECT 1");
@@ -397,14 +923,11 @@ public final class StorageManager {
 
     private void closeConnection() {
         if (this.connection == null) return;
-        try {
-            this.connection.close();
-        } catch (SQLException e) {
+        try { this.connection.close(); }
+        catch (SQLException e) {
             this.plugin.getLogger().log(Level.WARNING,
                     "Failed to close database connection", e);
-        } finally {
-            this.connection = null;
-        }
+        } finally { this.connection = null; }
     }
 
     private List<String> schema() {
@@ -459,19 +982,12 @@ public final class StorageManager {
                 rs.getLong("created_at"),
                 rs.getString("ip"));
     }
-
-    private static String emptyIfNull(String value) {
-        return value == null ? "" : value;
-    }
-
+    private static String emptyIfNull(String value) { return value == null ? "" : value; }
     private static String setting(String key, String fallback) {
         String fromEnv = System.getenv(key);
-        if (fromEnv != null && !fromEnv.trim().isEmpty()) {
-            return fromEnv.trim();
-        }
+        if (fromEnv != null && !fromEnv.trim().isEmpty()) return fromEnv.trim();
         return fallback == null ? "" : fallback;
     }
-
     private static int parsePort(String value) {
         try { return Integer.parseInt(value.trim()); }
         catch (NumberFormatException e) { return 3306; }
@@ -479,14 +995,945 @@ public final class StorageManager {
 }
 '''
 
+# ── packet/PacketManager.java ──────────────────────────────────────────────
+JAVA_PACKET_MANAGER = r'''package com.yourname.nick.packet;
+
+import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.disguise.DisguiseRegistry;
+import com.yourname.nick.model.DisguiseProfile;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
+
+public final class PacketManager {
+
+    private final MineStormNickPlugin plugin;
+    private final DisguiseRegistry registry;
+
+    private Class<?> packetInfoClass;
+    private Class<?> packetDestroyClass;
+    private Class<?> packetSpawnClass;
+    private Class<?> packetClass;
+    private Class<?> enumPlayerInfoActionClass;
+    private Class<?> entityPlayerClass;
+    private Class<?> entityHumanClass;
+    private Class<?> worldServerClass;
+    private Class<?> playerConnectionClass;
+    private Class<?> chatComponentClass;
+
+    private Method getHandleMethod;
+    private Field  playerConnectionField;
+    private Method sendPacketMethod;
+    private Method getProfileMethod;
+    private Method getIdMethod;
+    private Method setLocationMethod;
+    private Method spawnInMethod;
+
+    private boolean enabled = false;
+
+    public PacketManager(MineStormNickPlugin plugin, DisguiseRegistry registry) {
+        this.plugin = plugin;
+        this.registry = registry;
+    }
+
+    public void load() { }
+
+    public boolean enable() {
+        try {
+            String pkg = "net.minecraft.server.v1_8_R3.";
+            this.packetInfoClass    = Class.forName(pkg + "PacketPlayOutPlayerInfo");
+            this.packetDestroyClass = Class.forName(pkg + "PacketPlayOutEntityDestroy");
+            this.packetSpawnClass   = Class.forName(pkg + "PacketPlayOutNamedEntitySpawn");
+            this.packetClass        = Class.forName(pkg + "Packet");
+            this.enumPlayerInfoActionClass =
+                    Class.forName(pkg + "PacketPlayOutPlayerInfo$EnumPlayerInfoAction");
+            this.entityPlayerClass  = Class.forName(pkg + "EntityPlayer");
+            this.entityHumanClass   = Class.forName(pkg + "EntityHuman");
+            this.worldServerClass   = Class.forName(pkg + "WorldServer");
+            this.playerConnectionClass = Class.forName(pkg + "PlayerConnection");
+            this.chatComponentClass    = Class.forName(pkg + "ChatComponentText");
+
+            Class<?> craftPlayer = Class.forName(
+                    "org.bukkit.craftbukkit.v1_8_R3.entity.CraftPlayer");
+            this.getHandleMethod = craftPlayer.getMethod("getHandle");
+            this.playerConnectionField = this.entityPlayerClass.getField("playerConnection");
+            this.sendPacketMethod = this.playerConnectionClass.getMethod(
+                    "sendPacket", this.packetClass);
+            this.getProfileMethod = this.entityHumanClass.getMethod("getProfile");
+            this.getIdMethod = this.entityPlayerClass.getMethod("getId");
+
+            this.setLocationMethod = tryGetMethod(this.entityPlayerClass,
+                    "setLocation", double.class, double.class, double.class,
+                    float.class, float.class);
+            this.spawnInMethod = tryGetMethod(this.entityPlayerClass,
+                    "spawnIn", this.worldServerClass);
+            if (this.spawnInMethod == null) {
+                this.spawnInMethod = tryGetMethod(this.entityPlayerClass, "spawnIn");
+            }
+
+            this.enabled = true;
+            this.plugin.getLogger().info(
+                    "PacketManager: hooks installed"
+                    + (this.spawnInMethod == null
+                            ? " (nametag respawn disabled on this server fork)"
+                            : ""));
+            return true;
+        } catch (Throwable t) {
+            this.plugin.getLogger().warning(
+                    "PacketManager: could not install NMS hooks - " + t);
+            this.enabled = false;
+            return false;
+        }
+    }
+
+    public void disable() { this.enabled = false; }
+
+    public void refreshTabList(Player target) {
+        if (!this.enabled || target == null || !target.isOnline()) return;
+        try {
+            Object handle = this.getHandleMethod.invoke(target);
+            String nick = resolveNick(target);
+            if (nick == null || nick.isEmpty()) return;
+
+            Field listName = findField(handle.getClass(), "listName");
+            if (listName != null) {
+                listName.setAccessible(true);
+                Object component = this.chatComponentClass
+                        .getConstructor(String.class).newInstance(nick);
+                listName.set(handle, component);
+            }
+
+            Object profile = this.getProfileMethod.invoke(handle);
+            if (profile != null) {
+                try {
+                    Method setName = profile.getClass()
+                            .getMethod("setName", String.class);
+                    setName.setAccessible(true);
+                    setName.invoke(profile, nick);
+                } catch (Throwable ignored) { }
+            }
+
+            List<Object> players = new ArrayList<Object>();
+            players.add(handle);
+            Object updateAction = enumAction("UPDATE_DISPLAY_NAME");
+            Object packet = buildInfoPacket(updateAction, players);
+            broadcast(packet);
+        } catch (Throwable t) {
+            this.plugin.getLogger().warning("refreshTabList failed: " + t);
+        }
+    }
+
+    public void refreshNametag(Player target) {
+        if (!this.enabled || target == null || !target.isOnline()) return;
+        if (this.spawnInMethod == null) { refreshTabList(target); return; }
+        try {
+            Object handle = this.getHandleMethod.invoke(target);
+            int entityId = (Integer) this.getIdMethod.invoke(handle);
+
+            Object destroyPacket = this.packetDestroyClass
+                    .getConstructor(int[].class)
+                    .newInstance((Object) new int[] { entityId });
+
+            Object world = target.getWorld();
+            Object worldServer = world.getClass()
+                    .getMethod("getHandle").invoke(world);
+
+            if (this.setLocationMethod != null) {
+                this.setLocationMethod.invoke(handle,
+                        target.getLocation().getX(),
+                        target.getLocation().getY(),
+                        target.getLocation().getZ(),
+                        target.getLocation().getYaw(),
+                        target.getLocation().getPitch());
+            }
+            if (this.spawnInMethod.getParameterTypes().length == 1) {
+                this.spawnInMethod.invoke(handle, worldServer);
+            } else {
+                this.spawnInMethod.invoke(handle);
+            }
+
+            Object spawnPacket = this.packetSpawnClass
+                    .getConstructor(this.entityHumanClass).newInstance(handle);
+
+            for (Player viewer : Bukkit.getOnlinePlayers()) {
+                if (viewer.equals(target)) continue;
+                sendPacket(viewer, destroyPacket);
+                sendPacket(viewer, spawnPacket);
+            }
+            refreshTabList(target);
+        } catch (Throwable t) {
+            this.plugin.getLogger().warning("refreshNametag failed: " + t);
+        }
+    }
+
+    public void resendOwnEntry(Player player) {
+        if (player == null || !player.isOnline()) return;
+        refreshTabList(player);
+        refreshNametag(player);
+    }
+
+    private static Method tryGetMethod(Class<?> clazz, String name, Class<?>... params) {
+        try {
+            Method m = clazz.getMethod(name, params);
+            m.setAccessible(true);
+            return m;
+        } catch (NoSuchMethodException e) { return null; }
+    }
+    private static Field findField(Class<?> clazz, String name) {
+        Class<?> c = clazz;
+        while (c != null) {
+            try {
+                Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) { c = c.getSuperclass(); }
+        }
+        return null;
+    }
+    private String resolveNick(Player player) {
+        DisguiseProfile profile = this.registry.get(player.getUniqueId()).orElse(null);
+        return profile == null ? null : profile.nickname();
+    }
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Object enumAction(String name) throws Exception {
+        return Enum.valueOf(
+                (Class<? extends Enum>) this.enumPlayerInfoActionClass, name);
+    }
+    private Object buildInfoPacket(Object action, List<Object> players)
+            throws Exception {
+        for (java.lang.reflect.Constructor<?> ctor
+                : this.packetInfoClass.getConstructors()) {
+            Class<?>[] params = ctor.getParameterTypes();
+            if (params.length == 2
+                    && params[0] == this.enumPlayerInfoActionClass
+                    && Iterable.class.isAssignableFrom(params[1])) {
+                return ctor.newInstance(action, players);
+            }
+        }
+        if (!players.isEmpty()) {
+            for (java.lang.reflect.Constructor<?> ctor
+                    : this.packetInfoClass.getConstructors()) {
+                Class<?>[] params = ctor.getParameterTypes();
+                if (params.length == 2
+                        && params[0] == this.enumPlayerInfoActionClass
+                        && params[1] == this.entityPlayerClass) {
+                    return ctor.newInstance(action, players.get(0));
+                }
+            }
+        }
+        throw new IllegalStateException("No usable PacketPlayOutPlayerInfo ctor");
+    }
+    private void broadcast(Object packet) throws Exception {
+        for (Player online : Bukkit.getOnlinePlayers()) sendPacket(online, packet);
+    }
+    private void sendPacket(Player player, Object packet) throws Exception {
+        Object handle = this.getHandleMethod.invoke(player);
+        Object connection = this.playerConnectionField.get(handle);
+        this.sendPacketMethod.invoke(connection, packet);
+    }
+}
+'''
+
+# ── integration/LuckPermsHook.java ─────────────────────────────────────────
+JAVA_LUCKPERMS_HOOK = r'''package com.yourname.nick.integration;
+
+import java.lang.reflect.Method;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.java.JavaPlugin;
+
+public final class LuckPermsHook {
+
+    private final JavaPlugin plugin;
+    private volatile boolean enabled;
+    private volatile boolean checkInheritance;
+    private volatile String requiredGroup;
+    private volatile String fallbackPermission;
+    private final Set<String> trackedGroups = new HashSet<String>();
+
+    public LuckPermsHook(JavaPlugin plugin) {
+        this.plugin = plugin;
+        reload(plugin.getConfig());
+    }
+
+    public void reload(FileConfiguration cfg) {
+        this.enabled = cfg.getBoolean("luckperms.enabled", true);
+        this.requiredGroup = String.valueOf(
+                cfg.getString("luckperms.required-group", "prime"))
+                .toLowerCase(Locale.ROOT);
+        this.checkInheritance = cfg.getBoolean("luckperms.check-inheritance", true);
+        this.fallbackPermission = cfg.getString(
+                "luckperms.required-permission", "minestormnicksystem.global");
+        this.trackedGroups.clear();
+        for (String g : cfg.getStringList("luckperms.tracked-groups")) {
+            if (g != null && !g.trim().isEmpty()) {
+                this.trackedGroups.add(g.toLowerCase(Locale.ROOT));
+            }
+        }
+        if (this.trackedGroups.isEmpty()) this.trackedGroups.add(this.requiredGroup);
+    }
+
+    public boolean isRanked(Player player) {
+        if (player == null) return false;
+        if (this.enabled && hasLuckPerms()) {
+            try { if (checkViaLuckPerms(player)) return true; }
+            catch (Throwable t) {
+                this.plugin.getLogger().fine(
+                        "LuckPerms lookup failed, falling back: " + t);
+            }
+        }
+        for (String g : this.trackedGroups) {
+            if (player.hasPermission("group." + g)) return true;
+        }
+        return player.hasPermission(this.fallbackPermission);
+    }
+
+    private boolean hasLuckPerms() {
+        try {
+            Class.forName("net.luckperms.api.LuckPermsProvider");
+            return this.plugin.getServer().getPluginManager().isPluginEnabled("LuckPerms");
+        } catch (Throwable t) { return false; }
+    }
+
+    private boolean checkViaLuckPerms(Player player) throws Exception {
+        Class<?> provider = Class.forName("net.luckperms.api.LuckPermsProvider");
+        Object luckPerms  = provider.getMethod("get").invoke(null);
+        Object userMgr    = luckPerms.getClass().getMethod("getUserManager").invoke(luckPerms);
+        Object user = userMgr.getClass().getMethod("getUser", UUID.class)
+                .invoke(userMgr, player.getUniqueId());
+        if (user == null) return false;
+        Object cached = user.getClass().getMethod("getCachedData").invoke(user);
+        Object meta   = cached.getClass().getMethod("getMetaData").invoke(cached);
+        String primaryGroup = String.valueOf(
+                meta.getClass().getMethod("getPrimaryGroup").invoke(meta))
+                .toLowerCase(Locale.ROOT);
+
+        if (this.trackedGroups.contains(primaryGroup)) return true;
+        if (!this.checkInheritance) return false;
+
+        try {
+            Method getInherited = meta.getClass().getMethod("getInheritedGroups");
+            Object inherited = getInherited.invoke(meta);
+            if (inherited instanceof Iterable) {
+                for (Object g : (Iterable<?>) inherited) {
+                    String n = String.valueOf(g).toLowerCase(Locale.ROOT);
+                    if (this.trackedGroups.contains(n)) return true;
+                }
+            }
+        } catch (NoSuchMethodException ignored) {
+            for (String tracked : this.trackedGroups) {
+                if (primaryGroup.contains(tracked)) return true;
+            }
+        }
+        return false;
+    }
+
+    public String requiredGroup() { return this.requiredGroup; }
+}
+'''
+
+# ── command/GlobalCommand.java ─────────────────────────────────────────────
+JAVA_GLOBAL_COMMAND = r'''package com.yourname.nick.command;
+
+import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.integration.LuckPermsHook;
+import com.yourname.nick.message.Messages;
+import java.util.Collections;
+import java.util.List;
+import org.bukkit.ChatColor;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabExecutor;
+import org.bukkit.entity.Player;
+
+public final class GlobalCommand implements TabExecutor {
+
+    private final MineStormNickPlugin plugin;
+    private final Messages messages;
+    private final LuckPermsHook luckPerms;
+
+    public GlobalCommand(MineStormNickPlugin plugin, Messages messages, LuckPermsHook luckPerms) {
+        this.plugin = plugin;
+        this.messages = messages;
+        this.luckPerms = luckPerms;
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command,
+                             String label, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "Players only.");
+            return true;
+        }
+        Player player = (Player) sender;
+        if (!this.luckPerms.isRanked(player)) {
+            player.sendMessage(ChatColor.RED
+                    + "You need the " + ChatColor.GOLD
+                    + this.luckPerms.requiredGroup() + ChatColor.RED
+                    + " rank or above to use /g.");
+            return true;
+        }
+        if (args.length == 0) {
+            player.sendMessage(ChatColor.RED + "Usage: /g <message>");
+            return true;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < args.length; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(args[i]);
+        }
+        String formatted = ChatColor.GOLD + "[G] " + ChatColor.RESET
+                + player.getDisplayName() + ChatColor.WHITE + ": " + sb;
+        this.plugin.getServer().broadcastMessage(formatted);
+        return true;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender s, Command c,
+                                      String a, String[] args) {
+        return Collections.emptyList();
+    }
+}
+'''
+
+# ── command/MineStormNickSystemCommand.java ────────────────────────────────
+JAVA_RELOAD_COMMAND = r'''package com.yourname.nick.command;
+
+import com.yourname.nick.MineStormNickPlugin;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import org.bukkit.ChatColor;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabExecutor;
+
+public final class MineStormNickSystemCommand implements TabExecutor {
+
+    private final MineStormNickPlugin plugin;
+
+    public MineStormNickSystemCommand(MineStormNickPlugin plugin) {
+        this.plugin = plugin;
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command,
+                             String label, String[] args) {
+        if (!sender.hasPermission("minestormnicksystem.admin")) {
+            sender.sendMessage(ChatColor.RED + "No permission.");
+            return true;
+        }
+        if (args.length == 0 || !"reload".equalsIgnoreCase(args[0])) {
+            sender.sendMessage(ChatColor.GOLD + "/" + label + " reload");
+            return true;
+        }
+        this.plugin.reloadEverything();
+        sender.sendMessage(ChatColor.GREEN + "MineStormNickSystem reloaded.");
+        return true;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender s, Command c,
+                                      String a, String[] args) {
+        if (args.length == 1) {
+            String typed = args[0].toLowerCase(Locale.ROOT);
+            if ("reload".startsWith(typed)) return Arrays.asList("reload");
+        }
+        return Collections.emptyList();
+    }
+}
+'''
+
+# ── MineStormNickPlugin.java ───────────────────────────────────────────────
+JAVA_MAIN = r'''package com.yourname.nick;
+
+import com.yourname.nick.command.GlobalCommand;
+import com.yourname.nick.command.MineStormNickSystemCommand;
+import com.yourname.nick.command.NickCommand;
+import com.yourname.nick.command.RealNameCommand;
+import com.yourname.nick.disguise.DisguiseManager;
+import com.yourname.nick.disguise.DisguiseRegistry;
+import com.yourname.nick.disguise.WorldRules;
+import com.yourname.nick.gui.BookGUIManager;
+import com.yourname.nick.gui.GuiConfig;
+import com.yourname.nick.integration.BedwarsLevelHook;
+import com.yourname.nick.integration.LuckPermsHook;
+import com.yourname.nick.integration.NickPlaceholderExpansion;
+import com.yourname.nick.listener.ChatListener;
+import com.yourname.nick.listener.ConnectionListener;
+import com.yourname.nick.listener.WorldListener;
+import com.yourname.nick.message.Messages;
+import com.yourname.nick.name.NameGenerator;
+import com.yourname.nick.name.NameValidator;
+import com.yourname.nick.packet.PacketManager;
+import com.yourname.nick.skin.SkinCacheManager;
+import com.yourname.nick.storage.StorageManager;
+import com.yourname.nick.task.ActionBarTask;
+import com.yourname.nick.util.Async;
+import java.io.File;
+import java.util.logging.Level;
+import org.bukkit.command.PluginCommand;
+import org.bukkit.command.TabExecutor;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.PluginManager;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
+
+public final class MineStormNickPlugin extends JavaPlugin {
+
+    private DisguiseRegistry registry;
+    private PacketManager    packets;
+    private StorageManager   storage;
+    private SkinCacheManager skins;
+    private DisguiseManager  disguises;
+    private BookGUIManager   bookGui;
+    private Messages         messages;
+    private NameValidator    validator;
+    private NameGenerator    generator;
+    private BedwarsLevelHook bedwars;
+    private GuiConfig        guiConfig;
+    private LuckPermsHook    luckPerms;
+    private Runnable         placeholderCleanup;
+    private BukkitTask       actionBarTask;
+    private BukkitTask       pruneTask;
+
+    @Override
+    public void onLoad() {
+        this.registry = new DisguiseRegistry();
+        this.packets  = new PacketManager(this, this.registry);
+        this.packets.load();
+    }
+
+    @Override
+    public void onEnable() {
+        saveDefaultConfig();
+        saveResourceIfMissing("gui.yml");
+        saveResourceIfMissing("messages.yml");
+        saveResourceIfMissing("names.yml");
+
+        this.messages  = new Messages(this);
+        this.guiConfig = new GuiConfig(this);
+        YamlConfiguration names = loadNames();
+
+        if (!this.packets.enable()) {
+            getLogger().severe(
+                    "MineStormNickSystem requires Paper 1.19.3 or newer (player info update packets). Disabling.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        this.storage = new StorageManager(this);
+        this.storage.initialize().whenComplete((ignored, error) -> {
+            if (error != null) {
+                getLogger().log(Level.SEVERE,
+                        "Database initialisation failed; disabling MineStormNickSystem.", error);
+                Async.main(MineStormNickPlugin.this, new Runnable() {
+                    @Override public void run() {
+                        getServer().getPluginManager().disablePlugin(MineStormNickPlugin.this);
+                    }
+                });
+            }
+        });
+
+        this.skins = new SkinCacheManager(this);
+        this.skins.initialize();
+
+        this.validator = new NameValidator(names, this.registry);
+        this.generator = new NameGenerator(names, this.validator);
+        this.bedwars   = new BedwarsLevelHook(getConfig());
+        this.luckPerms = new LuckPermsHook(this);
+        WorldRules rules = WorldRules.fromConfig(getConfig(), getLogger());
+
+        this.disguises = new DisguiseManager(
+                this, this.registry, this.packets, this.storage, rules, this.bedwars);
+        this.bookGui = new BookGUIManager(
+                this, this.messages, this.guiConfig, this.disguises,
+                this.skins, this.generator, this.validator, this.storage);
+
+        PluginManager pm = getServer().getPluginManager();
+        pm.registerEvents(new ConnectionListener(
+                this, this.registry, this.disguises, this.storage, this.bookGui), this);
+        pm.registerEvents(new WorldListener(this.disguises), this);
+        pm.registerEvents(new ChatListener(getConfig(), this.registry, this.bedwars), this);
+
+        bind("nick",                new NickCommand(this, this.messages, this.bookGui,
+                                                    this.disguises, this.skins, this.validator));
+        bind("realname",            new RealNameCommand(this, this.messages,
+                                                        this.registry, this.storage));
+        bind("minestormnicksystem", new MineStormNickSystemCommand(this));
+        bind("g",                   new GlobalCommand(this, this.messages, this.luckPerms));
+
+        scheduleTasks();
+
+        if (pm.isPluginEnabled("PlaceholderAPI")) {
+            final NickPlaceholderExpansion expansion =
+                    new NickPlaceholderExpansion(this, this.registry, this.bedwars);
+            expansion.register();
+            this.placeholderCleanup = new Runnable() {
+                @Override public void run() { expansion.unregister(); }
+            };
+        }
+    }
+
+    @Override
+    public void onDisable() {
+        cancelTasks();
+        getServer().getScheduler().cancelTasks(this);
+        if (this.placeholderCleanup != null) {
+            this.placeholderCleanup.run();
+            this.placeholderCleanup = null;
+        }
+        if (this.disguises != null) this.disguises.shutdown();
+        if (this.bookGui   != null) this.bookGui.clear();
+        if (this.skins     != null) this.skins.shutdown();
+        if (this.storage   != null) this.storage.close();
+        if (this.packets   != null) this.packets.disable();
+    }
+
+    public void reloadEverything() {
+        try {
+            reloadConfig();
+            saveResourceIfMissing("gui.yml");
+            saveResourceIfMissing("messages.yml");
+            saveResourceIfMissing("names.yml");
+
+            this.messages  = new Messages(this);
+            this.guiConfig = new GuiConfig(this);
+            YamlConfiguration names = loadNames();
+
+            this.validator = new NameValidator(names, this.registry);
+            this.generator = new NameGenerator(names, this.validator);
+            this.bedwars   = new BedwarsLevelHook(getConfig());
+            this.luckPerms.reload(getConfig());
+
+            this.bookGui = new BookGUIManager(
+                    this, this.messages, this.guiConfig, this.disguises,
+                    this.skins, this.generator, this.validator, this.storage);
+
+            cancelTasks();
+            scheduleTasks();
+            getLogger().info("MineStormNickSystem reloaded.");
+        } catch (Throwable t) {
+            getLogger().log(Level.SEVERE, "Reload failed", t);
+        }
+    }
+
+    private void scheduleTasks() {
+        if (getConfig().getBoolean("actionbar.enabled", true)) {
+            long interval = Math.max(10L, getConfig().getLong("actionbar.interval-ticks", 40L));
+            ActionBarTask task = new ActionBarTask(
+                    this, this.registry,
+                    this.messages.get("actionbar"),
+                    getConfig().getBoolean("actionbar.show-when-dormant", true));
+            this.actionBarTask = getServer().getScheduler()
+                    .runTaskTimer(this, task, interval, interval);
+        }
+        this.pruneTask = getServer().getScheduler().runTaskTimerAsynchronously(
+                this, new Runnable() {
+                    @Override public void run() { registry.prunePending(60000L); }
+                }, 1200L, 1200L);
+    }
+
+    private void cancelTasks() {
+        if (this.actionBarTask != null) {
+            try { this.actionBarTask.cancel(); } catch (Throwable ignored) { }
+            this.actionBarTask = null;
+        }
+        if (this.pruneTask != null) {
+            try { this.pruneTask.cancel(); } catch (Throwable ignored) { }
+            this.pruneTask = null;
+        }
+    }
+
+    private YamlConfiguration loadNames() {
+        File file = new File(getDataFolder(), "names.yml");
+        if (!file.exists()) saveResource("names.yml", false);
+        return YamlConfiguration.loadConfiguration(file);
+    }
+
+    private void saveResourceIfMissing(String name) {
+        File f = new File(getDataFolder(), name);
+        if (!f.exists()) {
+            try { saveResource(name, false); }
+            catch (IllegalArgumentException ignored) { }
+        }
+    }
+
+    private void bind(String name, TabExecutor executor) {
+        PluginCommand command = getCommand(name);
+        if (command == null) {
+            throw new IllegalStateException(
+                    "Command '" + name + "' is missing from plugin.yml");
+        }
+        command.setExecutor(executor);
+        command.setTabCompleter(executor);
+    }
+
+    public Messages getMessages()       { return this.messages; }
+    public LuckPermsHook getLuckPerms() { return this.luckPerms; }
+    public GuiConfig getGuiConfig()     { return this.guiConfig; }
+}
+'''
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  pom.xml patcher
+#  RESOURCES
 # ═══════════════════════════════════════════════════════════════════════════
 
-SQLITE_DEP_BLOCK = """        <!-- Modern SQLite driver (compiled for Java 8) with a full JDBC 4
-             implementation. Shaded under a private package so it never
-             clashes with the 3.7.2 copy bundled inside Spigot 1.8.8. -->
+RES_PLUGIN_YML = r'''name: MineStormNickSystem
+version: '1.0.0'
+main: com.yourname.nick.MineStormNickPlugin
+api-version: '1.8'
+description: MineStormNickSystem - nickname system for Spigot/Paper 1.8.8 (JDK 8+).
+authors: [MineStorm]
+softdepend: [PlaceholderAPI, LuckPerms]
+
+commands:
+  nick:
+    description: Manage your nickname.
+    usage: /nick [reset|skin <player>|name <name>|ui ...]
+    permission: nick.use
+  realname:
+    description: Look up the real identity behind a nickname.
+    usage: /realname <nick>
+    permission: nick.staff
+  minestormnicksystem:
+    description: Manage MineStormNickSystem.
+    usage: /minestormnicksystem reload
+    aliases: [msns]
+    permission: minestormnicksystem.admin
+  g:
+    description: Global chat for ranked players.
+    usage: /g <message>
+
+permissions:
+  nick.use:
+    description: Use /nick.
+    default: true
+  nick.skin:
+    description: Use /nick skin <player>.
+    default: op
+  nick.custom:
+    description: Use /nick name <name>.
+    default: op
+  nick.staff:
+    description: Use /realname.
+    default: op
+  minestormnicksystem.admin:
+    description: Use /minestormnicksystem reload.
+    default: op
+  minestormnicksystem.global:
+    description: Fallback permission for /g when LuckPerms is not installed.
+    default: op
+'''
+
+RES_CONFIG_YML = r'''# MineStormNickSystem configuration.
+
+settings:
+  persist-across-sessions: true
+  rewrite-chat: true
+  rewrite-join-quit: true
+
+# World restrictions were removed. Nicknames apply instantly, everywhere.
+
+actionbar:
+  enabled: true
+  interval-ticks: 40
+  show-when-dormant: true
+
+storage:
+  type: sqlite
+  sqlite-file: nick.db
+  mysql:
+    host: localhost
+    port: 3306
+    database: nicksystem
+    username: ""
+    password: ""
+    use-ssl: false
+
+skins:
+  cache-ttl-minutes: 1440
+  request-timeout-seconds: 10
+  pool-players: []
+  pool: []
+
+integrations:
+  bedwars:
+    enabled: false
+    min-stars: 1
+    max-stars: 12
+    chat-prefix: true
+    real-level-placeholder: ""
+
+# ---------------------------------------------------------------------------
+# LuckPerms integration - controls who can use /g.
+# ---------------------------------------------------------------------------
+luckperms:
+  enabled: true
+  required-group: "prime"
+  check-inheritance: true
+  tracked-groups:
+    - prime
+    - elite
+    - mvp
+  required-permission: "minestormnicksystem.global"
+'''
+
+RES_GUI_YML = r'''# -----------------------------------------------------------------------------
+# gui.yml - strings shown inside the /nick setup book.
+# Legacy '&' colour codes are translated automatically.
+# Hot-reloadable with /minestormnicksystem reload.
+# -----------------------------------------------------------------------------
+
+book:
+  title:  "Nickname Setup"
+  author: "MineStormNickSystem"
+
+rank:
+  title: ""
+  body:
+    - "&0Let's get you set up with your nickname!"
+    - "&0First, you'll need to choose which &lRANK&r&0 you would like to be shown as when nicked."
+    - ""
+  entries:
+    DEFAULT:
+      label: "&8➤ &7DEFAULT"
+      hover: "Play as the default rank"
+    VIP:
+      label: "&8➤ &aVIP"
+      hover: "Play as VIP"
+    VIP_PLUS:
+      label: "&8➤ &aVIP&6+"
+      hover: "Play as VIP+"
+    MVP:
+      label: "&8➤ &bMVP"
+      hover: "Play as MVP"
+    MVP_PLUS:
+      label: "&8➤ &bMVP&c+"
+      hover: "Play as MVP+"
+
+skin:
+  title: ""
+  body:
+    - "&0Awesome! Now, which &lSKIN&r&0 would you like to have while nicked?"
+    - ""
+  entries:
+    normal:
+      label: "&8➤ &1My normal skin"
+      hover: "Keep your own skin"
+    default:
+      label: "&8➤ &1Steve/Alex skin"
+      hover: "Use the default Steve/Alex skin"
+    random:
+      label: "&8➤ &1Random skin"
+      hover: "Pick a random skin from the pool"
+    reuse:
+      label: "&8➤ &1Reuse [Previous Skin]"
+      hover: "Use the skin from your last nickname"
+
+name:
+  title: ""
+  body:
+    - "&0Alright, now you'll need to choose the &lNAME&r&0 to use!"
+    - ""
+  entries:
+    random:
+      label: "&8➤ &1Use a random name"
+      hover: "Generate a random username"
+    reuse:
+      label: "&8➤ &1Reuse [Previous Name]"
+      hover: "Use the name from your last nickname"
+  footer:
+    - ""
+    - "&0To go back to being your usual self, type:"
+    - "&c/nick reset"
+
+rolled:
+  title: ""
+  body:
+    - "&0We've generated a random username for you:"
+    - "&0&n%name%"
+    - ""
+  buttons:
+    use:
+      label: "&a&l[USE NAME]"
+      hover: "Nick as %name%"
+    again:
+      label: "&c&l[TRY AGAIN]"
+      hover: "Generate a different name"
+
+done:
+  title: ""
+  body:
+    - "&0You have finished setting up your nickname!"
+    - ""
+    - "&0You are now nicked as &8[&7%rank%&8] &7%name%&0."
+    - ""
+    - "&0To go back to being your usual self, type:"
+    - "&c/nick reset"
+
+buttons:
+  start:
+    label: "&a[ Start setup ]"
+    command: "/nick ui rank"
+    hover: "Begin the setup"
+'''
+
+RES_MESSAGES_YML = r'''# MineStormNickSystem messages (legacy colour codes).
+
+prefix: "&8[&6MineStorm&8] &r"
+
+player-only: "&cThis command can only be used by players."
+usage: "&cUsage: /nick, /nick reset, /nick skin [player], /nick name [name]"
+no-permission: "&cYou do not have permission to do that."
+session-expired: "&cThat nickname setup has expired. Type &e/nick &cto start again."
+storage-error: "&cThe nickname database is unavailable right now. Please try again shortly."
+
+nick-finished: "&aYou have finished setting up your nickname! You will be nicked as &8[&7%rank%&8] &7%name%&a."
+nick-reset: "&aYou are back to being your usual self."
+nick-not-nicked: "&cYou do not currently have a nickname."
+
+# Displayed ONLY in the action bar - never in chat.
+actionbar: "&aYou are currently &lNICKED&r&a."
+
+name-invalid: "&cThat name is not valid. Nicknames must be 3-16 chars: letters, numbers and underscores."
+name-reserved: "&cThat name is reserved and cannot be used as a nickname."
+name-in-use: "&cThat name is already in use."
+name-own: "&cYou cannot nick as your own username."
+name-generation-failed: "&cWe could not generate a free name right now. Please try again."
+name-usage: "&cUsage: /nick name [name]"
+
+skin-pool-empty: "&eNo random skins are configured, so the Steve/Alex skin will be used instead."
+skin-needs-nick: "&cSet up a nickname with /nick before changing your nicked skin."
+skin-usage: "&cUsage: /nick skin [player]"
+skin-invalid-name: "&cThat is not a valid Minecraft username."
+skin-fetching: "&7Fetching the skin of &e%player%&7..."
+skin-fetch-failed: "&cCould not reach Mojang. Please try again later."
+skin-not-found: "&cNo Mojang account or skin was found for &e%player%&c."
+skin-applied: "&aYour nicked skin is now the skin of &e%player%&a."
+
+realname-usage: "&cUsage: /realname [nick]"
+realname-live: "&6%nick% &7is really &a%real% &7(UUID %uuid%, disguise %state%)"
+realname-historical: "&6%nick% &7was last used by &a%real% &7(UUID %uuid%) on %date%. That player is not currently online with this nick."
+realname-none: "&cNo player has used the nickname &e%nick%&c."
+'''
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  pom.xml patcher (adds sqlite-jdbc + shade relocation, idempotent)
+# ═══════════════════════════════════════════════════════════════════════════
+
+SQLITE_DEP_BLOCK = """        <!-- Modern SQLite driver (Java 8) with a full JDBC 4 implementation.
+             Shaded under a private package so it never clashes with the
+             3.7.2 copy bundled inside Spigot 1.8.8. -->
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
@@ -509,12 +1956,10 @@ def patch_pom(dry: bool, backup: bool) -> None:
     if not pom.is_file():
         log("WARN", "pom.xml not found; skipping pom patch")
         return
-
     src = pom.read_text(encoding="utf-8")
     new = src
     changed = False
 
-    # 1) Add the sqlite-jdbc dependency once.
     if "sqlite-jdbc" not in new:
         close_idx = new.rfind("</dependencies>")
         if close_idx < 0:
@@ -523,71 +1968,128 @@ def patch_pom(dry: bool, backup: bool) -> None:
             new = new[:close_idx] + SQLITE_DEP_BLOCK + new[close_idx:]
             changed = True
 
-    # 2) Add the shade relocation once, right after createDependencyReducedPom.
     if "<relocations>" not in new:
         anchor = "<createDependencyReducedPom>false</createDependencyReducedPom>"
-        anchor_idx = new.find(anchor)
-        if anchor_idx < 0:
-            log("WARN",
-                "pom.xml has no shade plugin <createDependencyReducedPom>; "
-                "cannot add relocation")
+        idx = new.find(anchor)
+        if idx < 0:
+            log("WARN", "pom.xml shade plugin anchor missing; cannot add relocation")
         else:
-            insert_at = anchor_idx + len(anchor)
-            new = new[:insert_at] + "\n" + SHADE_RELOCATION_BLOCK.rstrip() + new[insert_at:]
+            at = idx + len(anchor)
+            new = new[:at] + "\n" + SHADE_RELOCATION_BLOCK.rstrip() + new[at:]
             changed = True
 
     if not changed:
         log("SKIP", "pom.xml already patched")
         return
-
     write_text(pom, new, dry=dry, backup=backup)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Optional: patch the driver lookup inside StorageManager to prefer the
-#  shaded class when it exists, otherwise fall back to org.sqlite.JDBC.
-#  (Included here as a safeguard if the user re-runs the script after having
-#  manually edited the file.)
+#  Rename helper for existing Java files
 # ═══════════════════════════════════════════════════════════════════════════
 
-def patch_storage_driver_lookup(path: Path, dry: bool, backup: bool) -> None:
-    if not path.is_file():
-        return
-    src = path.read_text(encoding="utf-8")
-    if "libs.sqlite" in src or "org.sqlite.JDBC" in src and "ClassNotFound" in src:
-        # Either the shaded class is already referenced, or the exact
-        # fallback logic is already there.  Our verbatim write covers
-        # this, so no surgical edit is needed.
-        return
-    # Not strictly needed because the verbatim rewrite always runs, but
-    # we keep the hook so future edits are possible without replacing
-    # the whole file.
-    return
+def rename_references(src: str) -> str:
+    src = src.replace("NickPlugin", "MineStormNickPlugin")
+    src = src.replace("MineStormMineStormNickPlugin", "MineStormNickPlugin")
+    src = src.replace("NickSystemCommand", "MineStormNickSystemCommand")
+    src = src.replace("/nicksystem", "/minestormnicksystem")
+    src = src.replace("nicksystem.admin", "minestormnicksystem.admin")
+    src = src.replace("nicksystem.global", "minestormnicksystem.global")
+    src = src.replace("\"NickSystem\"", "\"MineStormNickSystem\"")
+    return src
+
+
+CANONICAL_FILES = {
+    PACKAGE_DIR / "MineStormNickPlugin.java",
+    PACKAGE_DIR / "task" / "ActionBarTask.java",
+    PACKAGE_DIR / "packet" / "PacketManager.java",
+    PACKAGE_DIR / "gui" / "GuiConfig.java",
+    PACKAGE_DIR / "gui" / "BookGUIManager.java",
+    PACKAGE_DIR / "integration" / "LuckPermsHook.java",
+    PACKAGE_DIR / "disguise" / "WorldRules.java",
+    PACKAGE_DIR / "storage" / "StorageManager.java",
+    PACKAGE_DIR / "command" / "GlobalCommand.java",
+    PACKAGE_DIR / "command" / "MineStormNickSystemCommand.java",
+}
+
+
+def rename_existing_java_files(dry: bool, backup: bool) -> None:
+    for path in SRC_JAVA.rglob("*.java"):
+        if path in CANONICAL_FILES:
+            continue
+        try:
+            src = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            log("WARN", f"cannot read {path}: {exc}")
+            continue
+        new = rename_references(src)
+        if new == src:
+            continue
+        write_text(path, new, dry=dry, backup=backup)
+
+    old_main = PACKAGE_DIR / "NickPlugin.java"
+    new_main = PACKAGE_DIR / "MineStormNickPlugin.java"
+    if old_main.exists() and not new_main.exists():
+        if dry:
+            log("DRY ", f"would rename {old_main.name} -> {new_main.name}")
+        else:
+            try:
+                shutil.move(str(old_main), str(new_main))
+                log("OK  ", f"renamed {old_main.name} -> {new_main.name}")
+            except OSError as exc:
+                log("WARN", f"could not rename {old_main}: {exc}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Sentinel verification
+#  File maps + verification
 # ═══════════════════════════════════════════════════════════════════════════
 
-SENTINELS = {
-    "storage/StorageManager.java": [
-        "SELECT 1",                    # portable probe
-        "runWithRetry",                # one-shot retry
-        "PRAGMA journal_mode=WAL",
-    ],
-    "pom.xml": [
-        "sqlite-jdbc",
-        "<relocations>",
-        "com.yourname.nick.libs.sqlite",
-    ],
+JAVA_FILES = {
+    PACKAGE_DIR / "MineStormNickPlugin.java":                    JAVA_MAIN,
+    PACKAGE_DIR / "task" / "ActionBarTask.java":                 JAVA_ACTIONBAR,
+    PACKAGE_DIR / "packet" / "PacketManager.java":               JAVA_PACKET_MANAGER,
+    PACKAGE_DIR / "gui" / "GuiConfig.java":                      JAVA_GUI_CONFIG,
+    PACKAGE_DIR / "gui" / "BookGUIManager.java":                 JAVA_BOOK_GUI,
+    PACKAGE_DIR / "integration" / "LuckPermsHook.java":          JAVA_LUCKPERMS_HOOK,
+    PACKAGE_DIR / "disguise" / "WorldRules.java":                JAVA_WORLD_RULES,
+    PACKAGE_DIR / "storage" / "StorageManager.java":             JAVA_STORAGE_MANAGER,
+    PACKAGE_DIR / "command" / "GlobalCommand.java":              JAVA_GLOBAL_COMMAND,
+    PACKAGE_DIR / "command" / "MineStormNickSystemCommand.java": JAVA_RELOAD_COMMAND,
+}
+
+RESOURCE_FILES = {
+    RESOURCES / "plugin.yml":   RES_PLUGIN_YML,
+    RESOURCES / "config.yml":   RES_CONFIG_YML,
+    RESOURCES / "gui.yml":      RES_GUI_YML,
+    RESOURCES / "messages.yml": RES_MESSAGES_YML,
 }
 
 
 def verify_sentinels() -> bool:
+    checks = {
+        PACKAGE_DIR / "task" / "ActionBarTask.java":
+            ["PacketPlayOutChat", "(byte) 2"],
+        PACKAGE_DIR / "disguise" / "WorldRules.java":
+            ["return true;", "class WorldRules"],
+        PACKAGE_DIR / "storage" / "StorageManager.java":
+            ["SELECT 1", "runWithRetry", "PRAGMA journal_mode=WAL"],
+        PACKAGE_DIR / "packet" / "PacketManager.java":
+            ["UPDATE_DISPLAY_NAME", "listName"],
+        PACKAGE_DIR / "MineStormNickPlugin.java":
+            ["minestormnicksystem", "reloadEverything"],
+        RESOURCES / "plugin.yml":
+            ["minestormnicksystem:", "msns", "  g:"],
+        RESOURCES / "config.yml":
+            ["luckperms:", "required-group:", "actionbar:"],
+        RESOURCES / "gui.yml":
+            ["rank:", "done:", "buttons:"],
+        RESOURCES / "messages.yml":
+            ["actionbar:"],
+        ROOT / "pom.xml":
+            ["sqlite-jdbc", "<relocations>"],
+    }
     ok = True
-    for rel, needles in SENTINELS.items():
-        path = (ROOT / "src" / "main" / "java" / "com" / "yourname" / "nick" / rel) \
-               if rel.endswith(".java") else (ROOT / rel)
+    for path, needles in checks.items():
         if not path.is_file():
             log("FAIL", f"missing {path.relative_to(ROOT)}")
             ok = False
@@ -606,15 +2108,16 @@ def verify_sentinels() -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-            description="Fix SQLite AbstractMethodError in MineStormNickSystem.")
+            description="MineStormNickSystem complete fixer (final).")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-backup", action="store_true")
     args = parser.parse_args()
 
     print("=" * 72)
-    print("MineStormNickSystem - SQLite AbstractMethodError fixer")
+    print("MineStormNickSystem fixer (final)")
     print(f"  project root : {ROOT}")
     print(f"  java package : {PACKAGE_DIR.relative_to(ROOT)}")
+    print(f"  resources    : {RESOURCES.relative_to(ROOT)}")
     print(f"  mode         : {'DRY-RUN' if args.dry_run else 'APPLY'}"
           f"{' (no backups)' if args.no_backup else ''}")
     print("=" * 72)
@@ -626,35 +2129,52 @@ def main() -> int:
 
     backup = not args.no_backup
 
-    # 1. Rewrite StorageManager.java with the portable version.
-    storage_path = PACKAGE_DIR / "storage" / "StorageManager.java"
-    write_text(storage_path, JAVA_STORAGE_MANAGER, dry=args.dry_run, backup=backup)
+    rename_existing_java_files(args.dry_run, backup)
 
-    # 2. Patch pom.xml (dependency + shade relocation).
+    for path, content in {**JAVA_FILES, **RESOURCE_FILES}.items():
+        result = write_text(path, content, dry=args.dry_run, backup=backup)
+        if result == "created":   CREATED.append(str(path.relative_to(ROOT)))
+        elif result == "updated": UPDATED.append(str(path.relative_to(ROOT)))
+        else:                     SKIPPED.append(str(path.relative_to(ROOT)))
+
+    old_cmd = PACKAGE_DIR / "command" / "NickSystemCommand.java"
+    if old_cmd.exists():
+        if args.dry_run:
+            log("DRY ", f"would delete {old_cmd.relative_to(ROOT)}")
+        else:
+            try:
+                old_cmd.unlink()
+                DELETED.append(str(old_cmd.relative_to(ROOT)))
+                log("OK  ", f"deleted {old_cmd.relative_to(ROOT)}")
+            except OSError as exc:
+                log("WARN", f"could not delete {old_cmd}: {exc}")
+
     patch_pom(args.dry_run, backup)
 
-    # 3. Verify.
     if not args.dry_run:
         print()
         log("CHK ", "verifying sentinels")
         if verify_sentinels():
             log("CHK ", "all sentinels present")
-        else:
-            log("CHK ", "some sentinels missing - see FAIL lines above")
 
     print()
     print("=" * 72)
     print("Summary")
     print("=" * 72)
-    for level, message in LOG:
-        print(f"  [{level:<4}] {message}")
+    print(f"  created : {len(CREATED)}")
+    for p in CREATED: print(f"    + {p}")
+    print(f"  updated : {len(UPDATED)}")
+    for p in UPDATED: print(f"    ~ {p}")
+    print(f"  deleted : {len(DELETED)}")
+    for p in DELETED: print(f"    - {p}")
+    print(f"  skipped : {len(SKIPPED)}")
+    for p in SKIPPED: print(f"    = {p}")
     print()
     if args.dry_run:
         print("Dry-run complete. Re-run without --dry-run to apply.")
     else:
-        print("Rebuild with:   mvn -B clean package")
-        print("Then STOP the server fully and start it again (a /reload is not enough")
-        print("because the old SQLite driver stays loaded in the JVM).")
+        print("Rebuild:  mvn -B clean package")
+        print("Then STOP the server fully and start it again (a /reload is not enough).")
     return 0
 
 

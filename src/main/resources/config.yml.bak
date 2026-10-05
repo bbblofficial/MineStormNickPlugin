@@ -5,8 +5,6 @@ settings:
   rewrite-chat: true
   rewrite-join-quit: true
 
-# World restrictions were removed. Nicknames apply instantly, everywhere.
-
 actionbar:
   enabled: true
   interval-ticks: 40

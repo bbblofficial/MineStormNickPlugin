@@ -25,15 +25,9 @@ import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.ClickEvent;
 import net.md_5.bungee.api.chat.HoverEvent;
 import net.md_5.bungee.api.chat.TextComponent;
-import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
-/**
- * Book-driven nickname setup. Every string from gui.yml is already
- * colour-translated by {@link GuiConfig}, so we only need to feed it to
- * TextComponent.fromLegacyText (which understands the section-sign).
- */
 public final class BookGUIManager {
 
     private final MineStormNickPlugin plugin;
@@ -123,7 +117,7 @@ public final class BookGUIManager {
 
     private void showIntro(Player player) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line("§3§lMineStorm Nickname Setup"));
+        out.add(line("\u00a73\u00a7lMineStorm Nickname Setup"));
         out.add(blank());
         GuiConfig.Button b = gui.button("start");
         out.add(button(b.label(), b.command(), b.hover()));
@@ -135,7 +129,7 @@ public final class BookGUIManager {
         for (String raw : gui.body("rank")) out.add(line(raw));
         for (Rank r : Rank.values()) {
             GuiConfig.Button e = gui.entry("rank", r.name());
-            String label = empty(e.label()) ? "§8➤ §7" + r.label() : e.label();
+            String label = empty(e.label()) ? "\u00a78\u27a4 \u00a77" + r.label() : e.label();
             String hover = empty(e.hover()) ? "Use " + r.label() : e.hover();
             out.add(button(label, "/nick ui rank " + r.name(), hover));
         }
@@ -168,15 +162,15 @@ public final class BookGUIManager {
         for (String raw : gui.body("rolled")) {
             out.add(line(gui.format(raw, "name", name)));
         }
-        GuiConfig.Button use = gui.pageButton("rolled", "use");
+        GuiConfig.Button use   = gui.pageButton("rolled", "use");
         GuiConfig.Button again = gui.pageButton("rolled", "again");
         out.add(button(
-                empty(use.label()) ? "§a§l[USE NAME]" : use.label(),
+                empty(use.label()) ? "\u00a7a\u00a7l[USE NAME]" : use.label(),
                 "/nick ui use",
                 gui.format(empty(use.hover()) ? "Nick as %name%" : use.hover(),
                         "name", name)));
         out.add(button(
-                empty(again.label()) ? "§c§l[TRY AGAIN]" : again.label(),
+                empty(again.label()) ? "\u00a7c\u00a7l[TRY AGAIN]" : again.label(),
                 "/nick ui reroll",
                 empty(again.hover()) ? "Generate a different name" : again.hover()));
         openBook(player, out);
@@ -186,13 +180,10 @@ public final class BookGUIManager {
         Rank rank = Rank.DEFAULT;
         Optional<DisguiseProfile> prof = disguises.profile(player.getUniqueId());
         if (prof.isPresent()) rank = prof.get().rank();
-
         List<BaseComponent> out = new ArrayList<BaseComponent>();
         for (String raw : gui.body("done")) {
             out.add(line(gui.format(raw,
-                    "name", nick,
-                    "rank", rank.label(),
-                    "player", player.getName())));
+                    "name", nick, "rank", rank.label(), "player", player.getName())));
         }
         openBook(player, out);
     }
@@ -211,7 +202,7 @@ public final class BookGUIManager {
     private void chooseSkin(Player player, NickSession session, String[] args) {
         if (args.length < 2) { showSkin(player, session); return; }
         String choice = args[1].toLowerCase(Locale.ROOT);
-        if ("normal".equals(choice))      session.skin(SkinData.normal());
+        if ("normal".equals(choice))       session.skin(SkinData.normal());
         else if ("default".equals(choice)) session.skin(SkinData.defaultSkin());
         else if ("random".equals(choice)) {
             Optional<SkinData> pick = this.skins.randomPoolSkin();
@@ -264,7 +255,7 @@ public final class BookGUIManager {
     private void addEntry(List<BaseComponent> out, String page,
                           String key, String command) {
         GuiConfig.Button e = gui.entry(page, key);
-        String label = empty(e.label()) ? ("§8➤ §7" + key) : e.label();
+        String label = empty(e.label()) ? ("\u00a78\u27a4 \u00a77" + key) : e.label();
         String hover = empty(e.hover()) ? key : e.hover();
         out.add(button(label, command, hover));
     }
@@ -276,23 +267,19 @@ public final class BookGUIManager {
     }
 
     private static boolean empty(String s) { return s == null || s.isEmpty(); }
-
     private static BaseComponent blank() {
         return new TextComponent(TextComponent.fromLegacyText("\n"));
     }
-
-    /** Renders a raw legacy string (already '§'-coded by GuiConfig) + newline. */
     private static BaseComponent line(String raw) {
         return new TextComponent(TextComponent.fromLegacyText(
                 (raw == null ? "" : raw) + "\n"));
     }
-
     private static BaseComponent button(String label, String command, String hover) {
         TextComponent c = new TextComponent(TextComponent.fromLegacyText(
-                "§a" + label + "\n"));
+                "\u00a7a" + label + "\n"));
         c.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command));
         c.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                TextComponent.fromLegacyText("§7" + hover)));
+                TextComponent.fromLegacyText("\u00a77" + hover)));
         return c;
     }
 }

@@ -10,29 +10,45 @@ import java.util.List;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
+/**
+ * Spigot 1.8.8 tab-list + nametag updater.
+ *
+ * <p>Fix: the previous implementation restored the original GameProfile
+ * immediately after broadcasting ADD_PLAYER, so the tab list reverted to
+ * the real name on the next vanilla packet. This version:</p>
+ * <ol>
+ *   <li>sets {@code EntityPlayer.listName} to a {@code ChatComponentText}
+ *       holding the nick,</li>
+ *   <li>broadcasts {@code PacketPlayOutPlayerInfo} with the
+ *       {@code UPDATE_DISPLAY_NAME} action,</li>
+ *   <li>permanently writes the nick into {@code GameProfile.name} (no
+ *       restore), so /list, plugins and the server-side profile all see
+ *       the nick.</li>
+ * </ol>
+ */
 public final class PacketManager {
 
     private final MineStormNickPlugin plugin;
     private final DisguiseRegistry registry;
 
-    private Class<?> packetInfoClass;
-    private Class<?> packetDestroyClass;
-    private Class<?> packetSpawnClass;
-    private Class<?> packetClass;
-    private Class<?> enumPlayerInfoActionClass;
-    private Class<?> entityPlayerClass;
-    private Class<?> entityHumanClass;
-    private Class<?> worldServerClass;
-    private Class<?> playerConnectionClass;
-    private Class<?> chatComponentClass;
+    private Class<?>  packetInfoClass;
+    private Class<?>  packetDestroyClass;
+    private Class<?>  packetSpawnClass;
+    private Class<?>  packetClass;
+    private Class<?>  enumPlayerInfoActionClass;
+    private Class<?>  entityPlayerClass;
+    private Class<?>  entityHumanClass;
+    private Class<?>  worldServerClass;
+    private Class<?>  playerConnectionClass;
+    private Class<?>  chatComponentClass;
 
     private Method getHandleMethod;
     private Field  playerConnectionField;
     private Method sendPacketMethod;
     private Method getProfileMethod;
     private Method getIdMethod;
-    private Method setLocationMethod;
-    private Method spawnInMethod;
+    private Method setLocationMethod;   // optional
+    private Method spawnInMethod;       // optional
 
     private boolean enabled = false;
 
@@ -41,7 +57,7 @@ public final class PacketManager {
         this.registry = registry;
     }
 
-    public void load() { }
+    public void load() { /* no-op */ }
 
     public boolean enable() {
         try {
@@ -93,6 +109,8 @@ public final class PacketManager {
 
     public void disable() { this.enabled = false; }
 
+    /* ------------------------------------------------------------------ */
+
     public void refreshTabList(Player target) {
         if (!this.enabled || target == null || !target.isOnline()) return;
         try {
@@ -100,6 +118,7 @@ public final class PacketManager {
             String nick = resolveNick(target);
             if (nick == null || nick.isEmpty()) return;
 
+            // 1.8.8 tab-list display name lives on EntityPlayer.listName.
             Field listName = findField(handle.getClass(), "listName");
             if (listName != null) {
                 listName.setAccessible(true);
@@ -108,6 +127,7 @@ public final class PacketManager {
                 listName.set(handle, component);
             }
 
+            // Permanently write the nick into GameProfile.name.
             Object profile = this.getProfileMethod.invoke(handle);
             if (profile != null) {
                 try {
@@ -120,6 +140,7 @@ public final class PacketManager {
 
             List<Object> players = new ArrayList<Object>();
             players.add(handle);
+
             Object updateAction = enumAction("UPDATE_DISPLAY_NAME");
             Object packet = buildInfoPacket(updateAction, players);
             broadcast(packet);
@@ -130,7 +151,10 @@ public final class PacketManager {
 
     public void refreshNametag(Player target) {
         if (!this.enabled || target == null || !target.isOnline()) return;
-        if (this.spawnInMethod == null) { refreshTabList(target); return; }
+        if (this.spawnInMethod == null) {
+            refreshTabList(target);
+            return;
+        }
         try {
             Object handle = this.getHandleMethod.invoke(target);
             int entityId = (Integer) this.getIdMethod.invoke(handle);
@@ -158,7 +182,8 @@ public final class PacketManager {
             }
 
             Object spawnPacket = this.packetSpawnClass
-                    .getConstructor(this.entityHumanClass).newInstance(handle);
+                    .getConstructor(this.entityHumanClass)
+                    .newInstance(handle);
 
             for (Player viewer : Bukkit.getOnlinePlayers()) {
                 if (viewer.equals(target)) continue;
@@ -177,6 +202,8 @@ public final class PacketManager {
         refreshNametag(player);
     }
 
+    /* ------------------------------------------------------------------ */
+
     private static Method tryGetMethod(Class<?> clazz, String name, Class<?>... params) {
         try {
             Method m = clazz.getMethod(name, params);
@@ -184,6 +211,7 @@ public final class PacketManager {
             return m;
         } catch (NoSuchMethodException e) { return null; }
     }
+
     private static Field findField(Class<?> clazz, String name) {
         Class<?> c = clazz;
         while (c != null) {
@@ -195,15 +223,18 @@ public final class PacketManager {
         }
         return null;
     }
+
     private String resolveNick(Player player) {
         DisguiseProfile profile = this.registry.get(player.getUniqueId()).orElse(null);
         return profile == null ? null : profile.nickname();
     }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Object enumAction(String name) throws Exception {
         return Enum.valueOf(
                 (Class<? extends Enum>) this.enumPlayerInfoActionClass, name);
     }
+
     private Object buildInfoPacket(Object action, List<Object> players)
             throws Exception {
         for (java.lang.reflect.Constructor<?> ctor
@@ -228,9 +259,13 @@ public final class PacketManager {
         }
         throw new IllegalStateException("No usable PacketPlayOutPlayerInfo ctor");
     }
+
     private void broadcast(Object packet) throws Exception {
-        for (Player online : Bukkit.getOnlinePlayers()) sendPacket(online, packet);
+        for (Player online : Bukkit.getOnlinePlayers()) {
+            sendPacket(online, packet);
+        }
     }
+
     private void sendPacket(Player player, Object packet) throws Exception {
         Object handle = this.getHandleMethod.invoke(player);
         Object connection = this.playerConnectionField.get(handle);

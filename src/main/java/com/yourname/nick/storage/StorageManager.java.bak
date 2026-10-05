@@ -21,6 +21,21 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
+/**
+ * Thread-confined SQLite/MySQL storage.
+ *
+ * <p><b>Java 17 fix:</b> {@link Connection#isValid(int)} is not implemented
+ * by the SQLite driver bundled with Spigot 1.8.8
+ * ({@code org.sqlite.JDBC:3.7.2}). Under Java 17 the JVM throws
+ * {@link AbstractMethodError} the moment that method is invoked. This
+ * class therefore performs the connection check with
+ * {@code isClosed()} plus a trivial {@code SELECT 1} probe, which every
+ * driver from Java 6 onwards supports.</p>
+ *
+ * <p>If a task fails for any reason, the connection is closed and the task
+ * is retried once. That keeps a single transient failure from killing the
+ * entire storage subsystem.</p>
+ */
 public final class StorageManager {
 
     private static final String COLUMNS =
@@ -81,11 +96,17 @@ public final class StorageManager {
         });
     }
 
+    /* ------------------------------------------------------------------ */
+    /*  Public API                                                        */
+    /* ------------------------------------------------------------------ */
+
     public CompletableFuture<Void> initialize() {
         return submit(new SqlTask<Void>() {
             @Override public Void run(Connection conn) throws SQLException {
                 try (Statement s = conn.createStatement()) {
-                    for (String sql : schema()) s.execute(sql);
+                    for (String sql : schema()) {
+                        s.execute(sql);
+                    }
                 }
                 return null;
             }
@@ -117,17 +138,21 @@ public final class StorageManager {
 
     public CompletableFuture<Optional<NickRecord>> findLatestForPlayer(UUID uuid) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
-                + "WHERE real_uuid = ? ORDER BY id DESC LIMIT 1", uuid.toString());
+                + "WHERE real_uuid = ? ORDER BY id DESC LIMIT 1",
+                uuid.toString());
     }
+
     public CompletableFuture<Optional<NickRecord>> findLastSetForPlayer(UUID uuid) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE real_uuid = ? AND action = 'SET' ORDER BY id DESC LIMIT 1",
                 uuid.toString());
     }
+
     public CompletableFuture<Optional<NickRecord>> findLatestByNickname(String nickname) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE LOWER(nickname) = LOWER(?) AND action = 'SET' "
-                + "ORDER BY id DESC LIMIT 1", nickname);
+                + "ORDER BY id DESC LIMIT 1",
+                nickname);
     }
 
     public void close() {
@@ -135,7 +160,9 @@ public final class StorageManager {
             this.executor.execute(new Runnable() {
                 @Override public void run() { closeConnection(); }
             });
-        } catch (RejectedExecutionException ignored) { return; }
+        } catch (RejectedExecutionException ignored) {
+            return;
+        }
         this.executor.shutdown();
         try {
             if (!this.executor.awaitTermination(5L, TimeUnit.SECONDS)) {
@@ -149,25 +176,38 @@ public final class StorageManager {
         }
     }
 
+    /* ------------------------------------------------------------------ */
+    /*  Internals                                                         */
+    /* ------------------------------------------------------------------ */
+
     @FunctionalInterface
-    public interface SqlTask<T> { T run(Connection connection) throws SQLException; }
+    public interface SqlTask<T> {
+        T run(Connection connection) throws SQLException;
+    }
 
     private <T> CompletableFuture<T> submit(final SqlTask<T> task) {
         final CompletableFuture<T> future = new CompletableFuture<T>();
         try {
             this.executor.execute(new Runnable() {
                 @Override public void run() {
-                    try { future.complete(runWithRetry(task)); }
-                    catch (Throwable t) { future.completeExceptionally(t); }
+                    try {
+                        future.complete(runWithRetry(task));
+                    } catch (Throwable t) {
+                        future.completeExceptionally(t);
+                    }
                 }
             });
-        } catch (RejectedExecutionException e) { future.completeExceptionally(e); }
+        } catch (RejectedExecutionException e) {
+            future.completeExceptionally(e);
+        }
         return future;
     }
 
+    /** Runs the task; on failure closes the connection and retries once. */
     private <T> T runWithRetry(SqlTask<T> task) throws SQLException {
-        try { return task.run(openConnection()); }
-        catch (Throwable first) {
+        try {
+            return task.run(openConnection());
+        } catch (Throwable first) {
             closeConnection();
             this.plugin.getLogger().log(Level.FINE,
                     "DB operation failed, retrying once: " + first);
@@ -182,20 +222,33 @@ public final class StorageManager {
                 try (PreparedStatement ps = conn.prepareStatement(sql)) {
                     ps.setString(1, parameter);
                     try (ResultSet rs = ps.executeQuery()) {
-                        return rs.next() ? Optional.of(map(rs))
-                                         : Optional.<NickRecord>empty();
+                        if (rs.next()) {
+                            return Optional.of(map(rs));
+                        }
+                        return Optional.<NickRecord>empty();
                     }
                 }
             }
         });
     }
 
+    /**
+     * Returns a healthy JDBC connection.
+     *
+     * <p><b>Why not {@code Connection.isValid(int)}?</b> The SQLite driver
+     * bundled with Spigot 1.8.8 ({@code org.sqlite.JDBC:3.7.2}) does not
+     * implement that method. On Java 17 the JVM enforces the interface
+     * contract and throws {@link AbstractMethodError}. We therefore probe
+     * the connection with a trivial {@code SELECT 1} which every driver
+     * since Java 6 supports.</p>
+     */
     private Connection openConnection() throws SQLException {
         if (this.connection != null && !this.connection.isClosed()
                 && probe(this.connection)) {
             return this.connection;
         }
         closeConnection();
+
         try {
             Class.forName(this.mysql
                     ? "com.mysql.cj.jdbc.Driver"
@@ -203,9 +256,11 @@ public final class StorageManager {
         } catch (ClassNotFoundException e) {
             throw new SQLException("JDBC driver not available on this server", e);
         }
+
         this.connection = this.mysql
                 ? DriverManager.getConnection(this.jdbcUrl, this.username, this.password)
                 : DriverManager.getConnection(this.jdbcUrl);
+
         if (!this.mysql) {
             try (Statement s = this.connection.createStatement()) {
                 s.execute("PRAGMA journal_mode=WAL");
@@ -215,6 +270,7 @@ public final class StorageManager {
         return this.connection;
     }
 
+    /** Portable liveness probe; never calls isValid(int). */
     private static boolean probe(Connection connection) {
         try (Statement s = connection.createStatement()) {
             s.execute("SELECT 1");
@@ -226,11 +282,14 @@ public final class StorageManager {
 
     private void closeConnection() {
         if (this.connection == null) return;
-        try { this.connection.close(); }
-        catch (SQLException e) {
+        try {
+            this.connection.close();
+        } catch (SQLException e) {
             this.plugin.getLogger().log(Level.WARNING,
                     "Failed to close database connection", e);
-        } finally { this.connection = null; }
+        } finally {
+            this.connection = null;
+        }
     }
 
     private List<String> schema() {
@@ -285,12 +344,19 @@ public final class StorageManager {
                 rs.getLong("created_at"),
                 rs.getString("ip"));
     }
-    private static String emptyIfNull(String value) { return value == null ? "" : value; }
+
+    private static String emptyIfNull(String value) {
+        return value == null ? "" : value;
+    }
+
     private static String setting(String key, String fallback) {
         String fromEnv = System.getenv(key);
-        if (fromEnv != null && !fromEnv.trim().isEmpty()) return fromEnv.trim();
+        if (fromEnv != null && !fromEnv.trim().isEmpty()) {
+            return fromEnv.trim();
+        }
         return fallback == null ? "" : fallback;
     }
+
     private static int parsePort(String value) {
         try { return Integer.parseInt(value.trim()); }
         catch (NumberFormatException e) { return 3306; }

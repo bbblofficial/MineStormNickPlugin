@@ -29,6 +29,11 @@ import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
+/**
+ * Book-driven nickname setup. Every string from gui.yml is already
+ * colour-translated by {@link GuiConfig}, so we only need to feed it to
+ * TextComponent.fromLegacyText (which understands the section-sign).
+ */
 public final class BookGUIManager {
 
     private final MineStormNickPlugin plugin;
@@ -88,7 +93,7 @@ public final class BookGUIManager {
         else if ("name".equals(sub))   chooseName(player, session, args);
         else if ("use".equals(sub))    useRolledName(player, session);
         else if ("reroll".equals(sub)) rollName(player, session);
-        else if ("close".equals(sub))  { /* book already closed */ }
+        else if ("close".equals(sub))  { }
         else                           showIntro(player);
     }
 
@@ -114,48 +119,46 @@ public final class BookGUIManager {
     public void clearSession(UUID uuid) { this.sessions.remove(uuid); }
     public void clear()                 { this.sessions.clear(); }
 
-    /* ------------------------------------------------------------------ */
-    /*  Pages                                                             */
-    /* ------------------------------------------------------------------ */
+    /* -------- Pages -------- */
 
     private void showIntro(Player player) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(ChatColor.DARK_AQUA, ChatColor.BOLD, "MineStorm Nickname Setup"));
+        out.add(line("§3§lMineStorm Nickname Setup"));
         out.add(blank());
         GuiConfig.Button b = gui.button("start");
         out.add(button(b.label(), b.command(), b.hover()));
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        openBook(player, out);
     }
 
     private void showRankPicker(Player player) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        for (String raw : gui.body("rank")) out.add(lineFromLegacy(raw));
+        for (String raw : gui.body("rank")) out.add(line(raw));
         for (Rank r : Rank.values()) {
             GuiConfig.Button e = gui.entry("rank", r.name());
-            String label = empty(e.label()) ? "&8➤ &7" + r.label() : e.label();
+            String label = empty(e.label()) ? "§8➤ §7" + r.label() : e.label();
             String hover = empty(e.hover()) ? "Use " + r.label() : e.hover();
             out.add(button(label, "/nick ui rank " + r.name(), hover));
         }
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        openBook(player, out);
     }
 
     private void showSkin(Player player, NickSession session) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        for (String raw : gui.body("skin")) out.add(lineFromLegacy(raw));
+        for (String raw : gui.body("skin")) out.add(line(raw));
         addEntry(out, "skin", "normal",  "/nick ui skin normal");
         addEntry(out, "skin", "default", "/nick ui skin default");
         addEntry(out, "skin", "random",  "/nick ui skin random");
         if (session.history() != null) addEntry(out, "skin", "reuse", "/nick ui skin reuse");
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        openBook(player, out);
     }
 
     private void showName(Player player, NickSession session) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        for (String raw : gui.body("name")) out.add(lineFromLegacy(raw));
+        for (String raw : gui.body("name")) out.add(line(raw));
         addEntry(out, "name", "random", "/nick ui name random");
         if (session.history() != null) addEntry(out, "name", "reuse", "/nick ui name reuse");
-        for (String raw : gui.footer("name")) out.add(lineFromLegacy(raw));
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        for (String raw : gui.footer("name")) out.add(line(raw));
+        openBook(player, out);
     }
 
     private void showRolledName(Player player, NickSession session) {
@@ -163,20 +166,20 @@ public final class BookGUIManager {
         if (name == null) { showName(player, session); return; }
         List<BaseComponent> out = new ArrayList<BaseComponent>();
         for (String raw : gui.body("rolled")) {
-            out.add(lineFromLegacy(gui.format(raw, "name", name)));
+            out.add(line(gui.format(raw, "name", name)));
         }
         GuiConfig.Button use = gui.pageButton("rolled", "use");
         GuiConfig.Button again = gui.pageButton("rolled", "again");
         out.add(button(
-                empty(use.label()) ? "&a&l[USE NAME]" : use.label(),
+                empty(use.label()) ? "§a§l[USE NAME]" : use.label(),
                 "/nick ui use",
                 gui.format(empty(use.hover()) ? "Nick as %name%" : use.hover(),
                         "name", name)));
         out.add(button(
-                empty(again.label()) ? "&c&l[TRY AGAIN]" : again.label(),
+                empty(again.label()) ? "§c§l[TRY AGAIN]" : again.label(),
                 "/nick ui reroll",
                 empty(again.hover()) ? "Generate a different name" : again.hover()));
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        openBook(player, out);
     }
 
     private void showFinished(Player player, String nick) {
@@ -186,17 +189,15 @@ public final class BookGUIManager {
 
         List<BaseComponent> out = new ArrayList<BaseComponent>();
         for (String raw : gui.body("done")) {
-            out.add(lineFromLegacy(gui.format(raw,
+            out.add(line(gui.format(raw,
                     "name", nick,
                     "rank", rank.label(),
                     "player", player.getName())));
         }
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        openBook(player, out);
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Step handlers                                                     */
-    /* ------------------------------------------------------------------ */
+    /* -------- Step handlers -------- */
 
     private void chooseRank(Player player, NickSession session, String[] args) {
         if (args.length < 2) { showRankPicker(player); return; }
@@ -258,19 +259,18 @@ public final class BookGUIManager {
         showFinished(player, nick);
     }
 
-    /* ------------------------------------------------------------------ */
-    /*  Helpers                                                           */
-    /* ------------------------------------------------------------------ */
+    /* -------- Helpers -------- */
 
     private void addEntry(List<BaseComponent> out, String page,
                           String key, String command) {
         GuiConfig.Button e = gui.entry(page, key);
-        String label = empty(e.label()) ? ("&8➤ &7" + key) : e.label();
+        String label = empty(e.label()) ? ("§8➤ §7" + key) : e.label();
         String hover = empty(e.hover()) ? key : e.hover();
         out.add(button(label, command, hover));
     }
 
-    private void openBook(Player player, BaseComponent[] page) {
+    private void openBook(Player player, List<BaseComponent> out) {
+        BaseComponent[] page = out.toArray(new BaseComponent[out.size()]);
         ItemStack book = VirtualBook.buildComponents(gui.title(), gui.author(), page);
         VirtualBook.open(player, book, page);
     }
@@ -281,25 +281,18 @@ public final class BookGUIManager {
         return new TextComponent(TextComponent.fromLegacyText("\n"));
     }
 
-    private static BaseComponent line(ChatColor colour, ChatColor style, String text) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(colour == null ? "" : colour.toString());
-        if (style != null) sb.append(style.toString());
-        sb.append(text == null ? "" : text).append('\n');
-        return new TextComponent(TextComponent.fromLegacyText(sb.toString()));
-    }
-
-    private static BaseComponent lineFromLegacy(String raw) {
-        String s = (raw == null) ? "" : raw;
-        return new TextComponent(TextComponent.fromLegacyText(s + "\n"));
+    /** Renders a raw legacy string (already '§'-coded by GuiConfig) + newline. */
+    private static BaseComponent line(String raw) {
+        return new TextComponent(TextComponent.fromLegacyText(
+                (raw == null ? "" : raw) + "\n"));
     }
 
     private static BaseComponent button(String label, String command, String hover) {
-        TextComponent c = new TextComponent(
-                TextComponent.fromLegacyText(ChatColor.GREEN + label + "\n"));
+        TextComponent c = new TextComponent(TextComponent.fromLegacyText(
+                "§a" + label + "\n"));
         c.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, command));
         c.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                TextComponent.fromLegacyText(ChatColor.GRAY + hover)));
+                TextComponent.fromLegacyText("§7" + hover)));
         return c;
     }
 }

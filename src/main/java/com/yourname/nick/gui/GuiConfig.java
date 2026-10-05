@@ -7,18 +7,13 @@ import org.bukkit.ChatColor;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/**
- * Typed reader for gui.yml. Every string returned by this class has
- * already had '&' legacy codes translated to '§' so it can be consumed
- * directly by TextComponent.fromLegacyText(...).
- */
+/** Typed reader for gui.yml. All strings are colour-translated on read. */
 public final class GuiConfig {
 
     public static final class Button {
         private final String label;
         private final String command;
         private final String hover;
-
         public Button(String label, String command, String hover) {
             this.label = colorize(label);
             this.command = command == null ? "" : command;
@@ -40,46 +35,34 @@ public final class GuiConfig {
         this.yaml = YamlConfiguration.loadConfiguration(f);
     }
 
-    /* -------- Book chrome -------- */
-
     public String title()  { return colorize(this.yaml.getString("book.title",  "Nickname Setup")); }
     public String author() { return colorize(this.yaml.getString("book.author", "MineStormNickSystem")); }
-
-    /* -------- Generic readers -------- */
 
     public String get(String path) {
         return colorize(this.yaml.getString(path, ""));
     }
 
     public List<String> list(String path) {
-        List<String> l = this.yaml.getStringList(path);
-        return colorizeList(l);
+        return colorizeList(this.yaml.getStringList(path));
     }
-
     public List<String> body(String page) {
         return colorizeList(this.yaml.getStringList(page + ".body"));
     }
-
     public List<String> footer(String page) {
         return colorizeList(this.yaml.getStringList(page + ".footer"));
     }
-
-    /* -------- Colour readers -------- */
 
     public ChatColor color(String page) {
         String raw = this.yaml.getString(page + "-color", "BLACK");
         try { return ChatColor.valueOf(raw.toUpperCase()); }
         catch (Throwable t) { return ChatColor.BLACK; }
     }
-
     public ChatColor style(String page) {
         String raw = this.yaml.getString(page + "-style", "");
         if (raw == null || raw.isEmpty()) return null;
         try { return ChatColor.valueOf(raw.toUpperCase()); }
         catch (Throwable t) { return null; }
     }
-
-    /* -------- Buttons -------- */
 
     public Button button(String key) {
         String base = "buttons." + key + ".";
@@ -88,7 +71,6 @@ public final class GuiConfig {
                 this.yaml.getString(base + "command", ""),
                 this.yaml.getString(base + "hover", ""));
     }
-
     public Button entry(String page, String key) {
         String base = page + ".entries." + key + ".";
         return new Button(
@@ -96,7 +78,6 @@ public final class GuiConfig {
                 "",
                 this.yaml.getString(base + "hover", ""));
     }
-
     public Button pageButton(String page, String key) {
         String base = page + ".buttons." + key + ".";
         return new Button(
@@ -105,13 +86,9 @@ public final class GuiConfig {
                 this.yaml.getString(base + "hover", ""));
     }
 
-    /* -------- Utilities -------- */
-
-    /** Static: translate '&' codes to '§'. */
     public static String colorize(String s) {
         return ChatColor.translateAlternateColorCodes('&', s == null ? "" : s);
     }
-
     private static List<String> colorizeList(List<String> in) {
         if (in == null) return Collections.emptyList();
         java.util.List<String> out = new java.util.ArrayList<String>(in.size());
@@ -119,7 +96,6 @@ public final class GuiConfig {
         return out;
     }
 
-    /** %key% -> value substitution (applied BEFORE colorize on the caller side). */
     public String format(String raw, String... pairs) {
         if (raw == null) return "";
         String out = raw;
