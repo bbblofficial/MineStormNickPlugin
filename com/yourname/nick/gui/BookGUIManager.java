@@ -29,9 +29,9 @@ import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 
 /**
- * Entirely book-driven nickname setup. All navigation happens through
- * clickable text inside a written book -- no chat prompts are ever sent
- * for the UI, matching the Hypixel Nick flow.
+ * Book-driven nickname setup. Every step is rendered inside a written
+ * book with clickable / hoverable text so the chat is never used for
+ * UI navigation (Hypixel-style).
  */
 public final class BookGUIManager {
 
@@ -56,48 +56,40 @@ public final class BookGUIManager {
                           NameGenerator generator,
                           NameValidator validator,
                           StorageManager storage) {
-        this.plugin     = plugin;
-        this.messages   = messages;
-        this.disguises  = disguises;
-        this.skins      = skins;
-        this.generator  = generator;
-        this.validator  = validator;
-        this.storage    = storage;
+        this.plugin = plugin;
+        this.messages = messages;
+        this.disguises = disguises;
+        this.skins = skins;
+        this.generator = generator;
+        this.validator = validator;
+        this.storage = storage;
     }
-
-    /* -------------------------------------------------------------- */
-    /*  Entry points                                                  */
-    /* -------------------------------------------------------------- */
 
     public void open(final Player player) {
         this.storage.findLastSetForPlayer(player.getUniqueId()).whenComplete(
                 new BiConsumer<Optional<NickRecord>, Throwable>() {
+            @Override
+            public void accept(final Optional<NickRecord> last, final Throwable error) {
+                Async.main(BookGUIManager.this.plugin, new Runnable() {
                     @Override
-                    public void accept(final Optional<NickRecord> last,
-                                       final Throwable error) {
-                        Async.main(BookGUIManager.this.plugin, new Runnable() {
-                            @Override
-                            public void run() {
-                                if (!player.isOnline()) {
-                                    return;
-                                }
-                                NickRecord history =
-                                        (error == null && last != null && last.isPresent())
-                                                ? last.get() : null;
-                                NickSession session = new NickSession(history);
-                                BookGUIManager.this.sessions.put(
-                                        player.getUniqueId(), session);
-                                BookGUIManager.this.showIntro(player);
-                            }
-                        });
+                    public void run() {
+                        if (!player.isOnline()) {
+                            return;
+                        }
+                        NickRecord history = (error == null && last != null && last.isPresent())
+                                ? last.get() : null;
+                        NickSession session = new NickSession(history);
+                        sessions.put(player.getUniqueId(), session);
+                        showIntro(player);
                     }
                 });
+            }
+        });
     }
 
     public void handle(Player player, String[] args) {
         NickSession session = this.sessions.get(player.getUniqueId());
         if (session == null) {
-            // No active session -> silently restart the whole flow in the book.
             open(player);
             return;
         }
@@ -111,7 +103,7 @@ public final class BookGUIManager {
         else if ("name".equals(sub))     chooseName(player, session, args);
         else if ("use".equals(sub))      useRolledName(player, session);
         else if ("reroll".equals(sub))   reroll(player, session);
-        else if ("close".equals(sub))    { /* player will close the book */ }
+        else if ("close".equals(sub))    { /* nothing - book closes */ }
         else                             showIntro(player);
     }
 
@@ -128,7 +120,6 @@ public final class BookGUIManager {
 
         NameValidator.Result result = this.validator.validate(nick, player);
         if (result != NameValidator.Result.VALID) {
-            // Reopen the name picker in the book. No chat error message.
             showName(player, session != null ? session : new NickSession(null));
             return;
         }
@@ -142,9 +133,9 @@ public final class BookGUIManager {
 
     public void clear()                 { this.sessions.clear(); }
 
-    /* -------------------------------------------------------------- */
-    /*  Book pages                                                    */
-    /* -------------------------------------------------------------- */
+    /* ------------------------------------------------------------------ */
+    /*  Pages                                                             */
+    /* ------------------------------------------------------------------ */
 
     private void showIntro(Player player) {
         BaseComponent[] page = new BaseComponent[] {
@@ -183,12 +174,9 @@ public final class BookGUIManager {
         out.add(line(ChatColor.BLACK, null, "Pick the skin you"));
         out.add(line(ChatColor.BLACK, null, "will wear while nicked."));
         out.add(blank());
-        out.add(button("[ My normal skin ]", "/nick ui skin normal",
-                "Keep your own skin"));
-        out.add(button("[ Steve/Alex ]", "/nick ui skin default",
-                "Default skin"));
-        out.add(button("[ Random skin ]", "/nick ui skin random",
-                "Random from the pool"));
+        out.add(button("[ My normal skin ]", "/nick ui skin normal", "Keep your own skin"));
+        out.add(button("[ Steve/Alex ]",     "/nick ui skin default", "Default skin"));
+        out.add(button("[ Random skin ]",    "/nick ui skin random", "Random from pool"));
         if (session.history() != null) {
             out.add(button("[ Reuse last skin ]", "/nick ui skin reuse",
                     "Your last nickname's skin"));
@@ -229,8 +217,7 @@ public final class BookGUIManager {
                 line(ChatColor.YELLOW, ChatColor.BOLD, name),
                 blank(),
                 button("[ USE THIS NAME ]", "/nick ui use", "Nick as " + name),
-                button("[ TRY AGAIN ]", "/nick ui reroll",
-                        "Generate a different name")
+                button("[ TRY AGAIN ]", "/nick ui reroll", "Generate a different name")
         };
         openBook(player, page);
     }
@@ -250,9 +237,9 @@ public final class BookGUIManager {
         openBook(player, page);
     }
 
-    /* -------------------------------------------------------------- */
-    /*  Step handlers                                                 */
-    /* -------------------------------------------------------------- */
+    /* ------------------------------------------------------------------ */
+    /*  Step handlers                                                     */
+    /* ------------------------------------------------------------------ */
 
     private void chooseRank(Player player, NickSession session, String[] args) {
         if (args.length < 2) {
@@ -330,7 +317,6 @@ public final class BookGUIManager {
     private void rollName(Player player, NickSession session) {
         Optional<String> name = this.generator.generate(player);
         if (!name.isPresent()) {
-            // No free name found -> stay in the book, back to the picker.
             showName(player, session);
             return;
         }
@@ -355,9 +341,9 @@ public final class BookGUIManager {
         showFinished(player, nick);
     }
 
-    /* -------------------------------------------------------------- */
-    /*  Component helpers                                             */
-    /* -------------------------------------------------------------- */
+    /* ------------------------------------------------------------------ */
+    /*  Component helpers                                                 */
+    /* ------------------------------------------------------------------ */
 
     private void openBook(Player player, BaseComponent[] page) {
         VirtualBook.open(player,
@@ -365,7 +351,7 @@ public final class BookGUIManager {
     }
 
     private static BaseComponent blank() {
-        return new TextComponent("\n");
+        return new TextComponent(TextComponent.fromLegacyText("\n"));
     }
 
     private static BaseComponent line(ChatColor colour, ChatColor style, String text) {

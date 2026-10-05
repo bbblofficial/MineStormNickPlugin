@@ -13,11 +13,6 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BookMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 
-/**
- * Builds and opens written books. Supports both legacy string pages and
- * rich BaseComponent pages (with click / hover events) which is what the
- * Hypixel-style nick GUI relies on.
- */
 public final class VirtualBook {
 
     private VirtualBook() {
@@ -38,9 +33,9 @@ public final class VirtualBook {
     }
 
     /**
-     * Builds a book whose pages are rich chat components. Uses
-     * {@code BookMeta.Spigot#setPages} if available so click / hover
-     * events work on 1.8.8, otherwise falls back to legacy strings.
+     * Builds a book with rich BaseComponent pages (click / hover events).
+     * Uses BookMeta.Spigot#setPages when available on 1.8.8, otherwise
+     * falls back to legacy text.
      */
     public static ItemStack buildComponents(String title,
                                             String author,
@@ -59,7 +54,7 @@ public final class VirtualBook {
             setPages.invoke(spigot, (Object) pages);
             rich = true;
         } catch (Throwable ignored) {
-            // Fall back to legacy below.
+            // fall through
         }
 
         if (!rich) {
@@ -74,7 +69,6 @@ public final class VirtualBook {
         return book;
     }
 
-    /** Opens the given book for the player via the 1.8 NMS book packet. */
     public static boolean open(Player player, ItemStack book) {
         if (player == null || book == null) {
             return false;
