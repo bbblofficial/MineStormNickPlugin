@@ -1,0 +1,31 @@
+name: NickSystem
+version: '1.0.0'
+main: com.yourname.nick.NickPlugin
+api-version: '1.8'
+description: Nickname system for Spigot/Paper 1.8.8 (built for JDK 8+).
+authors: [YourName]
+softdepend: [PlaceholderAPI]
+
+commands:
+  nick:
+    description: Manage your nickname.
+    usage: /nick [reset|skin <player>|name <name>]
+    permission: nick.use
+  realname:
+    description: Look up the real identity behind a nickname.
+    usage: /realname <nick>
+    permission: nick.staff
+
+permissions:
+  nick.use:
+    description: Use /nick.
+    default: true
+  nick.skin:
+    description: Use /nick skin <player>.
+    default: op
+  nick.custom:
+    description: Use /nick name <name>.
+    default: op
+  nick.staff:
+    description: Use /realname.
+    default: op
