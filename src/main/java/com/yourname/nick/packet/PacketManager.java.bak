@@ -16,12 +16,9 @@ import org.bukkit.entity.Player;
  * Sends real 1.8.8 packets so nick changes appear in the tab list
  * immediately, without a relog.
  *
- * <p>Fixed: refreshTabList used to mutate the GameProfile field, send
- * REMOVE_PLAYER + ADD_PLAYER and then *restore* the original profile,
- * so the tab list reverted to the real name on the next vanilla packet.
- * The new implementation updates EntityPlayer.listName with a
- * ChatComponentText and broadcasts UPDATE_DISPLAY_NAME, then keeps the
- * GameProfile.name in sync.</p>
+ * On CarbonSpigot forks some NMS methods have a different signature, so
+ * each optional hook (spawnIn, etc.) is resolved independently and a
+ * failure of one does NOT prevent the whole manager from enabling.
  */
 public final class PacketManager {
 
@@ -84,12 +81,14 @@ public final class PacketManager {
             this.getProfileMethod = this.entityHumanClass.getMethod("getProfile");
             this.getIdMethod = this.entityPlayerClass.getMethod("getId");
 
+            // --- optional hooks: do NOT fail if they are missing ----------
             this.setLocationMethod = tryGetMethod(this.entityPlayerClass,
                     "setLocation", double.class, double.class, double.class,
                     float.class, float.class);
             this.spawnInMethod = tryGetMethod(this.entityPlayerClass,
                     "spawnIn", this.worldServerClass);
             if (this.spawnInMethod == null) {
+                // Some CarbonSpigot builds have spawnIn() with no args.
                 this.spawnInMethod = tryGetMethod(this.entityPlayerClass, "spawnIn");
             }
 
@@ -122,39 +121,37 @@ public final class PacketManager {
         }
         try {
             Object handle = this.getHandleMethod.invoke(target);
+            Object profile = this.getProfileMethod.invoke(handle);
+
             String nick = resolveNick(target);
             if (nick == null || nick.isEmpty()) {
                 return;
             }
 
-            // 1.8.8 tab-list display name lives on EntityPlayer.listName.
-            Field listName = findField(handle.getClass(), "listName");
-            if (listName != null) {
-                listName.setAccessible(true);
-                Class<?> cc = Class.forName(
-                        "net.minecraft.server.v1_8_R3.ChatComponentText");
-                listName.set(handle, cc.getConstructor(String.class)
-                        .newInstance(nick));
-            }
+            UUID uuid = target.getUniqueId();
+            GameProfile copy = new GameProfile(uuid, nick);
 
-            // Keep the GameProfile in sync (permanently - no restore).
-            Object profile = this.getProfileMethod.invoke(handle);
-            if (profile != null) {
-                try {
-                    Method setName =
-                            profile.getClass().getMethod("setName", String.class);
-                    setName.setAccessible(true);
-                    setName.invoke(profile, nick);
-                } catch (Throwable ignored) {
-                    // authlib variant without setName - ignore.
-                }
+            Field profileField = findProfileField(handle.getClass());
+            if (profileField == null) {
+                return;
             }
+            profileField.setAccessible(true);
+            Object original = profileField.get(handle);
+            profileField.set(handle, copy);
 
             List<Object> players = new ArrayList<Object>();
             players.add(handle);
-            Object updateAction = enumAction("UPDATE_DISPLAY_NAME");
-            Object packet = buildInfoPacket(updateAction, players);
-            broadcast(packet);
+
+            Object removeAction = enumAction("REMOVE_PLAYER");
+            Object addAction    = enumAction("ADD_PLAYER");
+
+            Object removePacket = buildInfoPacket(removeAction, players);
+            Object addPacket    = buildInfoPacket(addAction, players);
+
+            broadcast(removePacket);
+            broadcast(addPacket);
+
+            profileField.set(handle, original);
         } catch (Throwable t) {
             this.plugin.getLogger().warning("refreshTabList failed: " + t);
         }
@@ -165,6 +162,8 @@ public final class PacketManager {
             return;
         }
         if (this.spawnInMethod == null) {
+            // CarbonSpigot-style fork. Just update the tab list - the
+            // in-world nametag is handled by TAB / other plugins there.
             refreshTabList(target);
             return;
         }
@@ -189,6 +188,7 @@ public final class PacketManager {
                         target.getLocation().getPitch());
             }
 
+            // Handle both signatures: spawnIn(WorldServer) and spawnIn().
             if (this.spawnInMethod.getParameterTypes().length == 1) {
                 this.spawnInMethod.invoke(handle, worldServer);
             } else {
@@ -210,6 +210,7 @@ public final class PacketManager {
             refreshTabList(target);
         } catch (Throwable t) {
             this.plugin.getLogger().warning("refreshNametag failed: " + t);
+            // Do not disable the whole manager for one failure.
         }
     }
 
@@ -235,11 +236,16 @@ public final class PacketManager {
         }
     }
 
-    private static Field findField(Class<?> clazz, String name) {
+    private String resolveNick(Player player) {
+        DisguiseProfile profile = this.registry.get(player.getUniqueId()).orElse(null);
+        return profile == null ? null : profile.nickname();
+    }
+
+    private Field findProfileField(Class<?> clazz) {
         Class<?> c = clazz;
         while (c != null) {
             try {
-                Field f = c.getDeclaredField(name);
+                Field f = c.getDeclaredField("profile");
                 f.setAccessible(true);
                 return f;
             } catch (NoSuchFieldException ignored) {
@@ -249,20 +255,9 @@ public final class PacketManager {
         return null;
     }
 
-    private String resolveNick(Player player) {
-        DisguiseProfile profile =
-                this.registry.get(player.getUniqueId()).orElse(null);
-        return profile == null ? null : profile.nickname();
-    }
-
-    private Field findProfileField(Class<?> clazz) {
-        return findField(clazz, "profile");
-    }
-
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Object enumAction(String name) throws Exception {
-        return Enum.valueOf(
-                (Class<? extends Enum>) this.enumPlayerInfoActionClass, name);
+        return Enum.valueOf((Class<? extends Enum>) this.enumPlayerInfoActionClass, name);
     }
 
     private Object buildInfoPacket(Object action, List<Object> players)

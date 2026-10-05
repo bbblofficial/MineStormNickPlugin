@@ -1,0 +1,116 @@
+# -----------------------------------------------------------------------------
+# gui.yml - every string shown inside the /nick setup book.
+# Colour codes: legacy '&' codes. Title/author are the book's own fields.
+# This file is hot-reloadable with /nicksystem reload.
+# -----------------------------------------------------------------------------
+
+book:
+  title:  "Nickname Setup"
+  author: "NickSystem"
+
+# -- Intro page --------------------------------------------------------------
+intro:
+  title: "Nickname Setup"
+  title-color: "DARK_AQUA"
+  title-style: "BOLD"
+  lines:
+    - "Nicknames let you play"
+    - "with a different name."
+    - ""
+    - "All server rules still"
+    - "apply and every nick"
+    - "is logged."
+
+# -- Rank picker -------------------------------------------------------------
+rank:
+  title: "Choose your RANK"
+  title-color: "DARK_AQUA"
+  title-style: "BOLD"
+  lines:
+    - "Pick the rank you"
+    - "will show while nicked."
+
+# -- Skin picker -------------------------------------------------------------
+skin:
+  title: "Choose your SKIN"
+  title-color: "DARK_AQUA"
+  title-style: "BOLD"
+  lines:
+    - "Pick the skin you"
+    - "will wear while nicked."
+
+# -- Name picker -------------------------------------------------------------
+name:
+  title: "Choose your NAME"
+  title-color: "DARK_AQUA"
+  title-style: "BOLD"
+  lines:
+    - "How do you want"
+    - "to be called?"
+
+# -- Rolled-name preview -----------------------------------------------------
+rolled:
+  title: "Random name"
+  title-color: "DARK_AQUA"
+  title-style: "BOLD"
+  lines:
+    - "We generated:"
+
+# -- Finished ----------------------------------------------------------------
+done:
+  title: "Nickname ready!"
+  title-color: "DARK_AQUA"
+  title-style: "BOLD"
+  lines:
+    - "You are now nicked as:"
+  footer:
+    - "The disguise is active"
+    - "everywhere right away."
+    - ""
+    - "Close the book when done."
+
+# -- Buttons (label / command / hover) ---------------------------------------
+buttons:
+  start:
+    label:   "[ Start setup ]"
+    command: "/nick ui rank"
+    hover:   "Begin the setup"
+  skin:
+    normal:
+      label:   "[ My normal skin ]"
+      command: "/nick ui skin normal"
+      hover:   "Keep your own skin"
+    default:
+      label:   "[ Steve/Alex ]"
+      command: "/nick ui skin default"
+      hover:   "Default skin"
+    random:
+      label:   "[ Random skin ]"
+      command: "/nick ui skin random"
+      hover:   "Random from pool"
+    reuse:
+      label:   "[ Reuse last skin ]"
+      command: "/nick ui skin reuse"
+      hover:   "Your last nickname's skin"
+  name:
+    random:
+      label:   "[ Random name ]"
+      command: "/nick ui name random"
+      hover:   "Generate a random username"
+    reuse:
+      label:   "[ Reuse last name ]"
+      command: "/nick ui name reuse"
+      hover:   "Your last nickname"
+    reset:
+      label:   "[ Reset nickname ]"
+      command: "/nick reset"
+      hover:   "Go back to your real name"
+  rolled:
+    use:
+      label:   "[ USE THIS NAME ]"
+      command: "/nick ui use"
+      hover:   "Confirm this nickname"
+    again:
+      label:   "[ TRY AGAIN ]"
+      command: "/nick ui reroll"
+      hover:   "Generate a different name"

@@ -1,12 +1,16 @@
 package com.yourname.nick;
 
+import com.yourname.nick.command.GlobalCommand;
 import com.yourname.nick.command.NickCommand;
+import com.yourname.nick.command.NickSystemCommand;
 import com.yourname.nick.command.RealNameCommand;
 import com.yourname.nick.disguise.DisguiseManager;
 import com.yourname.nick.disguise.DisguiseRegistry;
 import com.yourname.nick.disguise.WorldRules;
 import com.yourname.nick.gui.BookGUIManager;
+import com.yourname.nick.gui.GuiConfig;
 import com.yourname.nick.integration.BedwarsLevelHook;
+import com.yourname.nick.integration.LuckPermsHook;
 import com.yourname.nick.integration.NickPlaceholderExpansion;
 import com.yourname.nick.listener.ChatListener;
 import com.yourname.nick.listener.ConnectionListener;
@@ -24,9 +28,9 @@ import java.util.logging.Level;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 public final class NickPlugin extends JavaPlugin {
 
@@ -36,7 +40,17 @@ public final class NickPlugin extends JavaPlugin {
     private SkinCacheManager skins;
     private DisguiseManager  disguises;
     private BookGUIManager   bookGui;
+    private Messages         messages;
+    private NameValidator    validator;
+    private NameGenerator    generator;
+    private BedwarsLevelHook bedwars;
+    private GuiConfig        guiConfig;
+    private LuckPermsHook    luckPerms;
     private Runnable         placeholderCleanup;
+
+    /** Tracked so /reload and /nicksystem reload cannot stack duplicates. */
+    private BukkitTask actionBarTask;
+    private BukkitTask pruneTask;
 
     @Override
     public void onLoad() {
@@ -48,8 +62,13 @@ public final class NickPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        saveResourceIfMissing("gui.yml");
+        saveResourceIfMissing("messages.yml");
+        saveResourceIfMissing("names.yml");
+
+        this.messages  = new Messages(this);
+        this.guiConfig = new GuiConfig(this);
         YamlConfiguration names = loadNames();
-        Messages messages = new Messages(this);
 
         if (!this.packets.enable()) {
             getLogger().severe(
@@ -75,44 +94,36 @@ public final class NickPlugin extends JavaPlugin {
         this.skins = new SkinCacheManager(this);
         this.skins.initialize();
 
-        NameValidator validator = new NameValidator(names, this.registry);
-        NameGenerator generator = new NameGenerator(names, validator);
-        BedwarsLevelHook bedwars = new BedwarsLevelHook(getConfig());
+        this.validator = new NameValidator(names, this.registry);
+        this.generator = new NameGenerator(names, this.validator);
+        this.bedwars   = new BedwarsLevelHook(getConfig());
+        this.luckPerms = new LuckPermsHook(this);
         WorldRules rules = WorldRules.fromConfig(getConfig(), getLogger());
 
         this.disguises = new DisguiseManager(
-                this, this.registry, this.packets, this.storage, rules, bedwars);
+                this, this.registry, this.packets, this.storage, rules, this.bedwars);
         this.bookGui = new BookGUIManager(
-                this, messages, this.disguises, this.skins, generator, validator, this.storage);
+                this, this.messages, this.guiConfig, this.disguises,
+                this.skins, this.generator, this.validator, this.storage);
 
-        PluginManager pluginManager = getServer().getPluginManager();
-        pluginManager.registerEvents(new ConnectionListener(
+        PluginManager pm = getServer().getPluginManager();
+        pm.registerEvents(new ConnectionListener(
                 this, this.registry, this.disguises, this.storage, this.bookGui), this);
-        pluginManager.registerEvents(new WorldListener(this.disguises), this);
-        pluginManager.registerEvents(new ChatListener(getConfig(), this.registry, bedwars), this);
+        pm.registerEvents(new WorldListener(this.disguises), this);
+        pm.registerEvents(new ChatListener(getConfig(), this.registry, this.bedwars), this);
 
-        bind("nick", new NickCommand(this, messages, this.bookGui, this.disguises, this.skins, validator));
-        bind("realname", new RealNameCommand(this, messages, this.registry, this.storage));
+        bind("nick",       new NickCommand(this, this.messages, this.bookGui,
+                                           this.disguises, this.skins, this.validator));
+        bind("realname",   new RealNameCommand(this, this.messages,
+                                               this.registry, this.storage));
+        bind("nicksystem", new NickSystemCommand(this));
+        bind("g",          new GlobalCommand(this, this.messages, this.luckPerms));
 
-        if (getConfig().getBoolean("actionbar.enabled", true)) {
-            long interval = Math.max(10L, getConfig().getLong("actionbar.interval-ticks", 40L));
-            ActionBarTask task = new ActionBarTask(
-                    this, this.registry,
-                    messages.get("actionbar"),
-                    getConfig().getBoolean("actionbar.show-when-dormant", true));
-            getServer().getScheduler().runTaskTimer(this, task, interval, interval);
-        }
-        getServer().getScheduler().runTaskTimerAsynchronously(
-                this, new Runnable() {
-                    @Override
-                    public void run() {
-                        registry.prunePending(60000L);
-                    }
-                }, 1200L, 1200L);
+        scheduleTasks();
 
-        if (pluginManager.isPluginEnabled("PlaceholderAPI")) {
+        if (pm.isPluginEnabled("PlaceholderAPI")) {
             final NickPlaceholderExpansion expansion =
-                    new NickPlaceholderExpansion(this, this.registry, bedwars);
+                    new NickPlaceholderExpansion(this, this.registry, this.bedwars);
             expansion.register();
             this.placeholderCleanup = new Runnable() {
                 @Override
@@ -125,7 +136,9 @@ public final class NickPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        cancelTasks();
         getServer().getScheduler().cancelTasks(this);
+
         if (this.placeholderCleanup != null) {
             this.placeholderCleanup.run();
             this.placeholderCleanup = null;
@@ -137,6 +150,75 @@ public final class NickPlugin extends JavaPlugin {
         if (this.packets   != null) this.packets.disable();
     }
 
+    /* ------------------------------------------------------------------ */
+    /*  Reload                                                            */
+    /* ------------------------------------------------------------------ */
+
+    /** Called by /nicksystem reload. Never throws. */
+    public void reloadEverything() {
+        try {
+            reloadConfig();
+            saveResourceIfMissing("gui.yml");
+            saveResourceIfMissing("messages.yml");
+            saveResourceIfMissing("names.yml");
+
+            this.messages  = new Messages(this);
+            this.guiConfig = new GuiConfig(this);
+            YamlConfiguration names = loadNames();
+
+            this.validator = new NameValidator(names, this.registry);
+            this.generator = new NameGenerator(names, this.validator);
+            this.bedwars   = new BedwarsLevelHook(getConfig());
+            this.luckPerms.reload(getConfig());
+
+            this.bookGui = new BookGUIManager(
+                    this, this.messages, this.guiConfig, this.disguises,
+                    this.skins, this.generator, this.validator, this.storage);
+
+            cancelTasks();
+            scheduleTasks();
+
+            getLogger().info("NickSystem reloaded.");
+        } catch (Throwable t) {
+            getLogger().log(Level.SEVERE, "Reload failed", t);
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  Internals                                                         */
+    /* ------------------------------------------------------------------ */
+
+    private void scheduleTasks() {
+        if (getConfig().getBoolean("actionbar.enabled", true)) {
+            long interval = Math.max(10L,
+                    getConfig().getLong("actionbar.interval-ticks", 40L));
+            ActionBarTask task = new ActionBarTask(
+                    this, this.registry,
+                    this.messages.get("actionbar"),
+                    getConfig().getBoolean("actionbar.show-when-dormant", true));
+            this.actionBarTask = getServer().getScheduler()
+                    .runTaskTimer(this, task, interval, interval);
+        }
+        this.pruneTask = getServer().getScheduler().runTaskTimerAsynchronously(
+                this, new Runnable() {
+                    @Override
+                    public void run() {
+                        registry.prunePending(60000L);
+                    }
+                }, 1200L, 1200L);
+    }
+
+    private void cancelTasks() {
+        if (this.actionBarTask != null) {
+            try { this.actionBarTask.cancel(); } catch (Throwable ignored) { }
+            this.actionBarTask = null;
+        }
+        if (this.pruneTask != null) {
+            try { this.pruneTask.cancel(); } catch (Throwable ignored) { }
+            this.pruneTask = null;
+        }
+    }
+
     private YamlConfiguration loadNames() {
         File file = new File(getDataFolder(), "names.yml");
         if (!file.exists()) {
@@ -145,12 +227,28 @@ public final class NickPlugin extends JavaPlugin {
         return YamlConfiguration.loadConfiguration(file);
     }
 
+    private void saveResourceIfMissing(String name) {
+        File f = new File(getDataFolder(), name);
+        if (!f.exists()) {
+            try {
+                saveResource(name, false);
+            } catch (IllegalArgumentException ignored) {
+                // Resource not bundled - ignore.
+            }
+        }
+    }
+
     private void bind(String name, TabExecutor executor) {
         PluginCommand command = getCommand(name);
         if (command == null) {
-            throw new IllegalStateException("Command '" + name + "' is missing from plugin.yml");
+            throw new IllegalStateException(
+                    "Command '" + name + "' is missing from plugin.yml");
         }
         command.setExecutor(executor);
         command.setTabCompleter(executor);
     }
+
+    public Messages getMessages()       { return this.messages; }
+    public LuckPermsHook getLuckPerms() { return this.luckPerms; }
+    public GuiConfig getGuiConfig()     { return this.guiConfig; }
 }

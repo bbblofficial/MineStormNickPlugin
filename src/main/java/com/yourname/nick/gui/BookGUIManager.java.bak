@@ -27,32 +27,30 @@ import net.md_5.bungee.api.chat.HoverEvent;
 import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
 
 /**
  * Book-driven nickname setup. Every step is rendered inside a written
  * book with clickable / hoverable text so the chat is never used for
- * UI navigation.
- *
- * <p>All strings come from gui.yml through {@link GuiConfig}.</p>
+ * UI navigation (Hypixel-style).
  */
 public final class BookGUIManager {
 
-    private final NickPlugin plugin;
-    private final Messages messages;
-    private final GuiConfig gui;
+    private static final String BOOK_TITLE  = "Nickname Setup";
+    private static final String BOOK_AUTHOR = "NickSystem";
+
+    private final NickPlugin      plugin;
+    private final Messages        messages;
     private final DisguiseManager disguises;
     private final SkinCacheManager skins;
-    private final NameGenerator generator;
-    private final NameValidator validator;
-    private final StorageManager storage;
+    private final NameGenerator   generator;
+    private final NameValidator   validator;
+    private final StorageManager  storage;
 
     private final Map<UUID, NickSession> sessions =
             new ConcurrentHashMap<UUID, NickSession>();
 
     public BookGUIManager(NickPlugin plugin,
                           Messages messages,
-                          GuiConfig gui,
                           DisguiseManager disguises,
                           SkinCacheManager skins,
                           NameGenerator generator,
@@ -60,7 +58,6 @@ public final class BookGUIManager {
                           StorageManager storage) {
         this.plugin = plugin;
         this.messages = messages;
-        this.gui = gui;
         this.disguises = disguises;
         this.skins = skins;
         this.generator = generator;
@@ -79,10 +76,10 @@ public final class BookGUIManager {
                         if (!player.isOnline()) {
                             return;
                         }
-                        NickRecord history =
-                                (error == null && last != null && last.isPresent())
-                                        ? last.get() : null;
-                        sessions.put(player.getUniqueId(), new NickSession(history));
+                        NickRecord history = (error == null && last != null && last.isPresent())
+                                ? last.get() : null;
+                        NickSession session = new NickSession(history);
+                        sessions.put(player.getUniqueId(), session);
                         showIntro(player);
                     }
                 });
@@ -101,30 +98,24 @@ public final class BookGUIManager {
             return;
         }
         String sub = args[0].toLowerCase(Locale.ROOT);
-        if ("rank".equals(sub)) {
-            chooseRank(player, session, args);
-        } else if ("skin".equals(sub)) {
-            chooseSkin(player, session, args);
-        } else if ("name".equals(sub)) {
-            chooseName(player, session, args);
-        } else if ("use".equals(sub)) {
-            useRolledName(player, session);
-        } else if ("reroll".equals(sub)) {
-            rollName(player, session);
-        } else if ("close".equals(sub)) {
-            // book already closed
-        } else {
-            showIntro(player);
-        }
+        if ("rank".equals(sub))          chooseRank(player, session, args);
+        else if ("skin".equals(sub))     chooseSkin(player, session, args);
+        else if ("name".equals(sub))     chooseName(player, session, args);
+        else if ("use".equals(sub))      useRolledName(player, session);
+        else if ("reroll".equals(sub))   reroll(player, session);
+        else if ("close".equals(sub))    { /* nothing - book closes */ }
+        else                             showIntro(player);
     }
 
     public void applyCustomName(Player player, String nick) {
         NickSession session = this.sessions.get(player.getUniqueId());
         Optional<DisguiseProfile> current = this.disguises.profile(player.getUniqueId());
 
-        Rank rank = session != null ? session.rank()
+        Rank rank = session != null
+                ? session.rank()
                 : (current.isPresent() ? current.get().rank() : Rank.DEFAULT);
-        SkinData skin = session != null ? session.skin()
+        SkinData skin = session != null
+                ? session.skin()
                 : (current.isPresent() ? current.get().skin() : SkinData.normal());
 
         NameValidator.Result result = this.validator.validate(nick, player);
@@ -132,12 +123,14 @@ public final class BookGUIManager {
             showName(player, session != null ? session : new NickSession(null));
             return;
         }
+
         this.disguises.apply(player, nick, rank, skin);
         this.sessions.remove(player.getUniqueId());
         showFinished(player, nick);
     }
 
     public void clearSession(UUID uuid) { this.sessions.remove(uuid); }
+
     public void clear()                 { this.sessions.clear(); }
 
     /* ------------------------------------------------------------------ */
@@ -145,31 +138,30 @@ public final class BookGUIManager {
     /* ------------------------------------------------------------------ */
 
     private void showIntro(Player player) {
-        List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("intro.title"), gui.style("intro.title"),
-                gui.get("intro.title")));
-        out.add(blank());
-        for (String l : gui.list("intro.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
-        out.add(blank());
-        GuiConfig.Button b = gui.button("start");
-        out.add(button(b.label(), b.command(), b.hover()));
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        BaseComponent[] page = new BaseComponent[] {
+                line(ChatColor.DARK_AQUA, ChatColor.BOLD, "Nickname Setup"),
+                blank(),
+                line(ChatColor.BLACK, null, "Nicknames let you play"),
+                line(ChatColor.BLACK, null, "with a different name."),
+                blank(),
+                line(ChatColor.BLACK, null, "All server rules still"),
+                line(ChatColor.BLACK, null, "apply and every nick"),
+                line(ChatColor.BLACK, null, "is logged."),
+                blank(),
+                button("[ Start setup ]", "/nick ui rank", "Begin the setup")
+        };
+        openBook(player, page);
     }
 
     private void showRankPicker(Player player) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("rank.title"), gui.style("rank.title"),
-                gui.get("rank.title")));
+        out.add(line(ChatColor.DARK_AQUA, ChatColor.BOLD, "Choose your RANK"));
         out.add(blank());
-        for (String l : gui.list("rank.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
+        out.add(line(ChatColor.BLACK, null, "Pick the rank you"));
+        out.add(line(ChatColor.BLACK, null, "will show while nicked."));
         out.add(blank());
         for (Rank r : Rank.values()) {
-            out.add(button("[" + r.label() + "]",
-                    "/nick ui rank " + r.name(),
+            out.add(button("[" + r.label() + "]", "/nick ui rank " + r.name(),
                     "Use " + r.label()));
         }
         openBook(player, out.toArray(new BaseComponent[out.size()]));
@@ -177,41 +169,37 @@ public final class BookGUIManager {
 
     private void showSkin(Player player, NickSession session) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("skin.title"), gui.style("skin.title"),
-                gui.get("skin.title")));
+        out.add(line(ChatColor.DARK_AQUA, ChatColor.BOLD, "Choose your SKIN"));
         out.add(blank());
-        for (String l : gui.list("skin.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
+        out.add(line(ChatColor.BLACK, null, "Pick the skin you"));
+        out.add(line(ChatColor.BLACK, null, "will wear while nicked."));
         out.add(blank());
-        addButton(out, "skin.normal",  "/nick ui skin normal",  "Keep your own skin");
-        addButton(out, "skin.default", "/nick ui skin default", "Default skin");
-        addButton(out, "skin.random",  "/nick ui skin random",  "Random from pool");
+        out.add(button("[ My normal skin ]", "/nick ui skin normal", "Keep your own skin"));
+        out.add(button("[ Steve/Alex ]",     "/nick ui skin default", "Default skin"));
+        out.add(button("[ Random skin ]",    "/nick ui skin random", "Random from pool"));
         if (session.history() != null) {
-            addButton(out, "skin.reuse", "/nick ui skin reuse",
-                    "Your last nickname's skin");
+            out.add(button("[ Reuse last skin ]", "/nick ui skin reuse",
+                    "Your last nickname's skin"));
         }
         openBook(player, out.toArray(new BaseComponent[out.size()]));
     }
 
     private void showName(Player player, NickSession session) {
         List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("name.title"), gui.style("name.title"),
-                gui.get("name.title")));
+        out.add(line(ChatColor.DARK_AQUA, ChatColor.BOLD, "Choose your NAME"));
         out.add(blank());
-        for (String l : gui.list("name.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
+        out.add(line(ChatColor.BLACK, null, "How do you want"));
+        out.add(line(ChatColor.BLACK, null, "to be called?"));
         out.add(blank());
-        addButton(out, "name.random", "/nick ui name random",
-                "Generate a random username");
+        out.add(button("[ Random name ]", "/nick ui name random",
+                "Generate a random username"));
         if (session.history() != null) {
-            addButton(out, "name.reuse", "/nick ui name reuse",
-                    "Your last nickname");
+            out.add(button("[ Reuse last name ]", "/nick ui name reuse",
+                    "Your last nickname"));
         }
         out.add(blank());
-        addButton(out, "name.reset", "/nick reset",
-                "Go back to your real name");
+        out.add(button("[ Reset nickname ]", "/nick reset",
+                "Go back to your real name"));
         openBook(player, out.toArray(new BaseComponent[out.size()]));
     }
 
@@ -221,35 +209,32 @@ public final class BookGUIManager {
             showName(player, session);
             return;
         }
-        List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("rolled.title"), gui.style("rolled.title"),
-                gui.get("rolled.title")));
-        out.add(blank());
-        for (String l : gui.list("rolled.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
-        out.add(blank());
-        out.add(line(ChatColor.YELLOW, ChatColor.BOLD, name));
-        out.add(blank());
-        addButton(out, "rolled.use",   "/nick ui use",    "Nick as " + name);
-        addButton(out, "rolled.again", "/nick ui reroll", "Generate a different name");
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        BaseComponent[] page = new BaseComponent[] {
+                line(ChatColor.DARK_AQUA, ChatColor.BOLD, "Random name"),
+                blank(),
+                line(ChatColor.BLACK, null, "We generated:"),
+                blank(),
+                line(ChatColor.YELLOW, ChatColor.BOLD, name),
+                blank(),
+                button("[ USE THIS NAME ]", "/nick ui use", "Nick as " + name),
+                button("[ TRY AGAIN ]", "/nick ui reroll", "Generate a different name")
+        };
+        openBook(player, page);
     }
 
     private void showFinished(Player player, String nick) {
-        List<BaseComponent> out = new ArrayList<BaseComponent>();
-        out.add(line(gui.color("done.title"), gui.style("done.title"),
-                gui.get("done.title")));
-        out.add(blank());
-        for (String l : gui.list("done.lines")) {
-            out.add(line(ChatColor.BLACK, null, l));
-        }
-        out.add(line(ChatColor.YELLOW, ChatColor.BOLD, nick));
-        out.add(blank());
-        for (String l : gui.list("done.footer")) {
-            out.add(line(ChatColor.DARK_GRAY, null, l));
-        }
-        openBook(player, out.toArray(new BaseComponent[out.size()]));
+        BaseComponent[] page = new BaseComponent[] {
+                line(ChatColor.DARK_AQUA, ChatColor.BOLD, "Nickname ready!"),
+                blank(),
+                line(ChatColor.BLACK, null, "You are now nicked as:"),
+                line(ChatColor.YELLOW, ChatColor.BOLD, nick),
+                blank(),
+                line(ChatColor.BLACK, null, "The disguise is active"),
+                line(ChatColor.BLACK, null, "everywhere right away."),
+                blank(),
+                line(ChatColor.DARK_GRAY, null, "Close the book when done.")
+        };
+        openBook(player, page);
     }
 
     /* ------------------------------------------------------------------ */
@@ -325,6 +310,10 @@ public final class BookGUIManager {
         finish(player, session, session.pendingName());
     }
 
+    private void reroll(Player player, NickSession session) {
+        rollName(player, session);
+    }
+
     private void rollName(Player player, NickSession session) {
         Optional<String> name = this.generator.generate(player);
         if (!name.isPresent()) {
@@ -356,20 +345,9 @@ public final class BookGUIManager {
     /*  Component helpers                                                 */
     /* ------------------------------------------------------------------ */
 
-    private void addButton(List<BaseComponent> out, String key,
-                           String fallbackCmd, String fallbackHover) {
-        GuiConfig.Button b = gui.button(key);
-        String cmd = (b.command() == null || b.command().isEmpty())
-                ? fallbackCmd : b.command();
-        String hover = (b.hover() == null || b.hover().isEmpty())
-                ? fallbackHover : b.hover();
-        String label = (b.label() == null || b.label().isEmpty())
-                ? ("[ " + key + " ]") : b.label();
-        out.add(button(label, cmd, hover));
-    }
-
     private void openBook(Player player, BaseComponent[] page) {
-        ItemStack book = VirtualBook.buildComponents(gui.title(), gui.author(), page);
+        org.bukkit.inventory.ItemStack book =
+                VirtualBook.buildComponents(BOOK_TITLE, BOOK_AUTHOR, page);
         VirtualBook.open(player, book, page);
     }
 
@@ -379,11 +357,11 @@ public final class BookGUIManager {
 
     private static BaseComponent line(ChatColor colour, ChatColor style, String text) {
         StringBuilder sb = new StringBuilder();
-        sb.append(colour == null ? "" : colour.toString());
+        sb.append(colour.toString());
         if (style != null) {
             sb.append(style.toString());
         }
-        sb.append(text == null ? "" : text).append('\n');
+        sb.append(text).append('\n');
         return new TextComponent(TextComponent.fromLegacyText(sb.toString()));
     }
 

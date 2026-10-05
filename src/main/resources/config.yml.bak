@@ -76,23 +76,3 @@ integrations:
     # Resolved through PlaceholderAPI when the player is not disguised.
     # Never use a %nick_...% placeholder here.
     real-level-placeholder: ""
-
-# ---------------------------------------------------------------------------
-# LuckPerms integration - controls who can use /g.
-# ---------------------------------------------------------------------------
-luckperms:
-  # Master switch. When false, /g falls back to permission nodes only.
-  enabled: true
-  # Any player whose primary LuckPerms group is this one - or inherits from
-  # it when check-inheritance is true - may use /g.
-  required-group: "prime"
-  # Include groups that inherit from required-group (e.g. elite, mvp, ...).
-  check-inheritance: true
-  # Explicit list of *additional* accepted groups. Leave empty to auto-use
-  # required-group only.
-  tracked-groups:
-    - prime
-    - elite
-    - mvp
-  # Fallback permission node used when LuckPerms is missing or errors.
-  required-permission: "nicksystem.global"

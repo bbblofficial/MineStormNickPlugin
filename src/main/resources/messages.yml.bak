@@ -12,7 +12,6 @@ nick-finished: "&aYou have finished setting up your nickname! When you go into a
 nick-reset: "&aYou are back to being your usual self."
 nick-not-nicked: "&cYou do not currently have a nickname."
 
-# Displayed in the ACTION BAR only - never in chat.
 actionbar: "&c&lYou are currently NICKED"
 
 name-invalid: "&cThat name is not valid. Nicknames must be 3-16 chars: letters, numbers and underscores."
