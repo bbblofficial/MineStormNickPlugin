@@ -43,6 +43,10 @@
             <url>https://repo.extendedclip.com/content/repositories/placeholderapi/</url>
             <!-- PlaceholderAPI (soft-depend) -->
         </repository>
+            <repository>
+            <id>mojang</id>
+            <url>https://libraries.minecraft.net/</url>
+        </repository>
     </repositories>
 
     <dependencies>
@@ -56,6 +60,12 @@
             <groupId>me.clip</groupId>
             <artifactId>placeholderapi</artifactId>
             <version>${placeholderapi.version}</version>
+            <scope>provided</scope>
+        </dependency>
+            <dependency>
+            <groupId>com.mojang</groupId>
+            <artifactId>authlib</artifactId>
+            <version>1.5.21</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
