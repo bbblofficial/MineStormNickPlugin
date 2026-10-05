@@ -3,82 +3,25 @@
 """
 fixer.py
 ========
-Adds the missing Mojang authlib dependency to pom.xml and simplifies
-PacketManager so it works with that dependency.
+Makes PacketManager tolerate missing NMS methods on CarbonSpigot forks
+(which is what the user's server runs) and cleans up the leftover
+sqlite-jdbc jar that accidentally sits in plugins/.
 
-Run from repo root:
+Run from repo root, then:
 
     python fixer.py
     git add -A
-    git commit -m "fix: add authlib dependency for PacketManager"
+    git commit -m "fix: tolerate missing NMS methods on CarbonSpigot"
     git push
 """
 
 import os
-import re
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-POM  = os.path.join(ROOT, "pom.xml")
 
 
 # ---------------------------------------------------------------------------
-#  1. Patch pom.xml  --  add mojang repo + authlib dependency
-# ---------------------------------------------------------------------------
-
-MOJANG_REPO = """        <repository>
-            <id>mojang</id>
-            <url>https://libraries.minecraft.net/</url>
-        </repository>
-"""
-
-AUTHLIB_DEP = """        <dependency>
-            <groupId>com.mojang</groupId>
-            <artifactId>authlib</artifactId>
-            <version>1.5.21</version>
-            <scope>provided</scope>
-        </dependency>
-"""
-
-
-def patch_pom():
-    if not os.path.isfile(POM):
-        print("[fixer] WARNING: pom.xml not found - skipping")
-        return
-
-    with open(POM, "r", encoding="utf-8") as fh:
-        src = fh.read()
-
-    changed = False
-
-    # --- add the Mojang repository if it's not there yet ---------------
-    if "<id>mojang</id>" not in src:
-        # insert before </repositories>
-        idx = src.find("</repositories>")
-        if idx != -1:
-            src = src[:idx] + MOJANG_REPO + "    " + src[idx:]
-            changed = True
-            print("[fixer] added <repository> mojang")
-
-    # --- add the authlib dependency if it's not there yet --------------
-    if "<artifactId>authlib</artifactId>" not in src:
-        idx = src.find("</dependencies>")
-        if idx != -1:
-            src = src[:idx] + AUTHLIB_DEP + "    " + src[idx:]
-            changed = True
-            print("[fixer] added <dependency> com.mojang:authlib")
-
-    if not changed:
-        print("[fixer] pom.xml already up to date")
-        return
-
-    with open(POM, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(src)
-    print("[fixer] pom.xml updated")
-
-
-# ---------------------------------------------------------------------------
-#  2. Simplify PacketManager so it no longer references
-#     com.mojang.authlib.properties.Property directly
+#  PacketManager.java  --  nullable spawnIn, no hard failure
 # ---------------------------------------------------------------------------
 
 PACKETMANAGER_JAVA = r'''package com.yourname.nick.packet;
@@ -96,8 +39,12 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
 /**
- * Sends real 1.8.8 packets so that nick changes are visible immediately
- * in the tab list and in the world without a relog.
+ * Sends real 1.8.8 packets so nick changes appear in the tab list
+ * immediately, without a relog.
+ *
+ * On CarbonSpigot forks some NMS methods have a different signature, so
+ * each optional hook (spawnIn, etc.) is resolved independently and a
+ * failure of one does NOT prevent the whole manager from enabling.
  */
 public final class PacketManager {
 
@@ -118,9 +65,9 @@ public final class PacketManager {
     private Field  playerConnectionField;
     private Method sendPacketMethod;
     private Method getProfileMethod;
-    private Method setLocationMethod;
-    private Method spawnInMethod;
     private Method getIdMethod;
+    private Method setLocationMethod;   // optional
+    private Method spawnInMethod;       // optional
 
     private boolean enabled = false;
 
@@ -158,15 +105,25 @@ public final class PacketManager {
             this.sendPacketMethod = this.playerConnectionClass.getMethod(
                     "sendPacket", this.packetClass);
             this.getProfileMethod = this.entityHumanClass.getMethod("getProfile");
-            this.setLocationMethod = this.entityPlayerClass.getMethod(
-                    "setLocation", double.class, double.class, double.class,
-                    float.class, float.class);
-            this.spawnInMethod = this.entityPlayerClass.getMethod(
-                    "spawnIn", this.worldServerClass);
             this.getIdMethod = this.entityPlayerClass.getMethod("getId");
 
+            // --- optional hooks: do NOT fail if they are missing ----------
+            this.setLocationMethod = tryGetMethod(this.entityPlayerClass,
+                    "setLocation", double.class, double.class, double.class,
+                    float.class, float.class);
+            this.spawnInMethod = tryGetMethod(this.entityPlayerClass,
+                    "spawnIn", this.worldServerClass);
+            if (this.spawnInMethod == null) {
+                // Some CarbonSpigot builds have spawnIn() with no args.
+                this.spawnInMethod = tryGetMethod(this.entityPlayerClass, "spawnIn");
+            }
+
             this.enabled = true;
-            this.plugin.getLogger().info("PacketManager: NMS 1.8.8 hooks installed.");
+            this.plugin.getLogger().info(
+                    "PacketManager: hooks installed"
+                    + (this.spawnInMethod == null
+                            ? " (nametag respawn disabled on this server fork)"
+                            : ""));
             return true;
         } catch (Throwable t) {
             this.plugin.getLogger().warning(
@@ -197,12 +154,9 @@ public final class PacketManager {
                 return;
             }
 
-            // Build a new GameProfile that only carries the new name.
-            // We keep the same UUID so the client treats it as the same player.
             UUID uuid = target.getUniqueId();
             GameProfile copy = new GameProfile(uuid, nick);
 
-            // Patch the entity's profile so that ADD_PLAYER sends the nick.
             Field profileField = findProfileField(handle.getClass());
             if (profileField == null) {
                 return;
@@ -223,7 +177,6 @@ public final class PacketManager {
             broadcast(removePacket);
             broadcast(addPacket);
 
-            // restore
             profileField.set(handle, original);
         } catch (Throwable t) {
             this.plugin.getLogger().warning("refreshTabList failed: " + t);
@@ -232,6 +185,12 @@ public final class PacketManager {
 
     public void refreshNametag(Player target) {
         if (!this.enabled || target == null || !target.isOnline()) {
+            return;
+        }
+        if (this.spawnInMethod == null) {
+            // CarbonSpigot-style fork. Just update the tab list - the
+            // in-world nametag is handled by TAB / other plugins there.
+            refreshTabList(target);
             return;
         }
         try {
@@ -246,14 +205,21 @@ public final class PacketManager {
             Object worldServer = world.getClass()
                     .getMethod("getHandle").invoke(world);
 
-            this.setLocationMethod.invoke(handle,
-                    target.getLocation().getX(),
-                    target.getLocation().getY(),
-                    target.getLocation().getZ(),
-                    target.getLocation().getYaw(),
-                    target.getLocation().getPitch());
+            if (this.setLocationMethod != null) {
+                this.setLocationMethod.invoke(handle,
+                        target.getLocation().getX(),
+                        target.getLocation().getY(),
+                        target.getLocation().getZ(),
+                        target.getLocation().getYaw(),
+                        target.getLocation().getPitch());
+            }
 
-            this.spawnInMethod.invoke(handle, worldServer);
+            // Handle both signatures: spawnIn(WorldServer) and spawnIn().
+            if (this.spawnInMethod.getParameterTypes().length == 1) {
+                this.spawnInMethod.invoke(handle, worldServer);
+            } else {
+                this.spawnInMethod.invoke(handle);
+            }
 
             Object spawnPacket = this.packetSpawnClass
                     .getConstructor(this.entityHumanClass)
@@ -270,6 +236,7 @@ public final class PacketManager {
             refreshTabList(target);
         } catch (Throwable t) {
             this.plugin.getLogger().warning("refreshNametag failed: " + t);
+            // Do not disable the whole manager for one failure.
         }
     }
 
@@ -284,6 +251,16 @@ public final class PacketManager {
     /* ------------------------------------------------------------------ */
     /*  Internal helpers                                                  */
     /* ------------------------------------------------------------------ */
+
+    private static Method tryGetMethod(Class<?> clazz, String name, Class<?>... params) {
+        try {
+            Method m = clazz.getMethod(name, params);
+            m.setAccessible(true);
+            return m;
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+    }
 
     private String resolveNick(Player player) {
         DisguiseProfile profile = this.registry.get(player.getUniqueId()).orElse(null);
@@ -349,31 +326,41 @@ public final class PacketManager {
 '''
 
 
-def write_packetmanager():
-    for base in (os.path.join(ROOT, "src", "main", "java"),
-                 os.path.join(ROOT)):
-        path = os.path.join(base, "com", "yourname", "nick",
-                            "packet", "PacketManager.java")
-        if os.path.isfile(path):
-            with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(PACKETMANAGER_JAVA)
-            print("[fixer] rewrote " + os.path.relpath(path, ROOT))
-            return
-    print("[fixer] WARNING: PacketManager.java not found")
+def find_path(rel):
+    for base in (os.path.join(ROOT, "src", "main", "java"), ROOT):
+        candidate = os.path.join(base, rel)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def rewrite_packetmanager():
+    path = find_path(os.path.join(
+        "com", "yourname", "nick", "packet", "PacketManager.java"))
+    if path is None:
+        print("[fixer] WARNING: PacketManager.java not found")
+        return
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(PACKETMANAGER_JAVA)
+    print("[fixer] rewrote PacketManager.java")
 
 
 def main():
     print("=" * 60)
-    print(" NickSystem - authlib fix")
+    print(" NickSystem - CarbonSpigot compatibility fix")
     print("=" * 60)
-    patch_pom()
-    write_packetmanager()
+    rewrite_packetmanager()
     print("=" * 60)
     print("[fixer] DONE. Now run:")
     print("[fixer]   git add -A")
-    print("[fixer]   git commit -m 'fix: add authlib dependency'")
+    print("[fixer]   git commit -m 'fix: tolerate missing NMS methods'")
     print("[fixer]   git push")
     print("=" * 60)
+    print()
+    print("[fixer] ALSO DO THIS MANUALLY ON YOUR SERVER:")
+    print("  Delete  plugins/sqlite-jdbc-3.53.0.0.jar")
+    print("  (that file is a JDBC driver, not a plugin - it should not be")
+    print("   in the plugins/ folder at all.)")
 
 
 if __name__ == "__main__":

@@ -13,8 +13,12 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
 /**
- * Sends real 1.8.8 packets so that nick changes are visible immediately
- * in the tab list and in the world without a relog.
+ * Sends real 1.8.8 packets so nick changes appear in the tab list
+ * immediately, without a relog.
+ *
+ * On CarbonSpigot forks some NMS methods have a different signature, so
+ * each optional hook (spawnIn, etc.) is resolved independently and a
+ * failure of one does NOT prevent the whole manager from enabling.
  */
 public final class PacketManager {
 
@@ -35,9 +39,9 @@ public final class PacketManager {
     private Field  playerConnectionField;
     private Method sendPacketMethod;
     private Method getProfileMethod;
-    private Method setLocationMethod;
-    private Method spawnInMethod;
     private Method getIdMethod;
+    private Method setLocationMethod;   // optional
+    private Method spawnInMethod;       // optional
 
     private boolean enabled = false;
 
@@ -75,15 +79,25 @@ public final class PacketManager {
             this.sendPacketMethod = this.playerConnectionClass.getMethod(
                     "sendPacket", this.packetClass);
             this.getProfileMethod = this.entityHumanClass.getMethod("getProfile");
-            this.setLocationMethod = this.entityPlayerClass.getMethod(
-                    "setLocation", double.class, double.class, double.class,
-                    float.class, float.class);
-            this.spawnInMethod = this.entityPlayerClass.getMethod(
-                    "spawnIn", this.worldServerClass);
             this.getIdMethod = this.entityPlayerClass.getMethod("getId");
 
+            // --- optional hooks: do NOT fail if they are missing ----------
+            this.setLocationMethod = tryGetMethod(this.entityPlayerClass,
+                    "setLocation", double.class, double.class, double.class,
+                    float.class, float.class);
+            this.spawnInMethod = tryGetMethod(this.entityPlayerClass,
+                    "spawnIn", this.worldServerClass);
+            if (this.spawnInMethod == null) {
+                // Some CarbonSpigot builds have spawnIn() with no args.
+                this.spawnInMethod = tryGetMethod(this.entityPlayerClass, "spawnIn");
+            }
+
             this.enabled = true;
-            this.plugin.getLogger().info("PacketManager: NMS 1.8.8 hooks installed.");
+            this.plugin.getLogger().info(
+                    "PacketManager: hooks installed"
+                    + (this.spawnInMethod == null
+                            ? " (nametag respawn disabled on this server fork)"
+                            : ""));
             return true;
         } catch (Throwable t) {
             this.plugin.getLogger().warning(
@@ -114,12 +128,9 @@ public final class PacketManager {
                 return;
             }
 
-            // Build a new GameProfile that only carries the new name.
-            // We keep the same UUID so the client treats it as the same player.
             UUID uuid = target.getUniqueId();
             GameProfile copy = new GameProfile(uuid, nick);
 
-            // Patch the entity's profile so that ADD_PLAYER sends the nick.
             Field profileField = findProfileField(handle.getClass());
             if (profileField == null) {
                 return;
@@ -140,7 +151,6 @@ public final class PacketManager {
             broadcast(removePacket);
             broadcast(addPacket);
 
-            // restore
             profileField.set(handle, original);
         } catch (Throwable t) {
             this.plugin.getLogger().warning("refreshTabList failed: " + t);
@@ -149,6 +159,12 @@ public final class PacketManager {
 
     public void refreshNametag(Player target) {
         if (!this.enabled || target == null || !target.isOnline()) {
+            return;
+        }
+        if (this.spawnInMethod == null) {
+            // CarbonSpigot-style fork. Just update the tab list - the
+            // in-world nametag is handled by TAB / other plugins there.
+            refreshTabList(target);
             return;
         }
         try {
@@ -163,14 +179,21 @@ public final class PacketManager {
             Object worldServer = world.getClass()
                     .getMethod("getHandle").invoke(world);
 
-            this.setLocationMethod.invoke(handle,
-                    target.getLocation().getX(),
-                    target.getLocation().getY(),
-                    target.getLocation().getZ(),
-                    target.getLocation().getYaw(),
-                    target.getLocation().getPitch());
+            if (this.setLocationMethod != null) {
+                this.setLocationMethod.invoke(handle,
+                        target.getLocation().getX(),
+                        target.getLocation().getY(),
+                        target.getLocation().getZ(),
+                        target.getLocation().getYaw(),
+                        target.getLocation().getPitch());
+            }
 
-            this.spawnInMethod.invoke(handle, worldServer);
+            // Handle both signatures: spawnIn(WorldServer) and spawnIn().
+            if (this.spawnInMethod.getParameterTypes().length == 1) {
+                this.spawnInMethod.invoke(handle, worldServer);
+            } else {
+                this.spawnInMethod.invoke(handle);
+            }
 
             Object spawnPacket = this.packetSpawnClass
                     .getConstructor(this.entityHumanClass)
@@ -187,6 +210,7 @@ public final class PacketManager {
             refreshTabList(target);
         } catch (Throwable t) {
             this.plugin.getLogger().warning("refreshNametag failed: " + t);
+            // Do not disable the whole manager for one failure.
         }
     }
 
@@ -201,6 +225,16 @@ public final class PacketManager {
     /* ------------------------------------------------------------------ */
     /*  Internal helpers                                                  */
     /* ------------------------------------------------------------------ */
+
+    private static Method tryGetMethod(Class<?> clazz, String name, Class<?>... params) {
+        try {
+            Method m = clazz.getMethod(name, params);
+            m.setAccessible(true);
+            return m;
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+    }
 
     private String resolveNick(Player player) {
         DisguiseProfile profile = this.registry.get(player.getUniqueId()).orElse(null);
