@@ -23,6 +23,12 @@ import java.util.logging.Level;
 
 /**
  * SQLite/MySQL storage on a dedicated thread.
+ *
+ * NOTE: The Rank concept was removed from the plugin, but the "rank_used"
+ * column is kept in the schema so that existing databases do not break.
+ * New rows write the literal string "NONE" into that column and the value
+ * is never read back.
+ *
  * Never calls Connection#isValid(int): the driver bundled with Spigot
  * 1.8.8 does not implement it and Java 17 throws AbstractMethodError.
  */
@@ -31,6 +37,8 @@ public final class StorageManager {
     private static final String COLUMNS =
             "real_uuid, real_name, nickname, rank_used, skin_source, skin_value, "
             + "skin_signature, action, created_at, ip";
+
+    private static final String RANK_PLACEHOLDER = "NONE";
 
     private final MineStormNickPlugin plugin;
     private final ExecutorService executor;
@@ -91,6 +99,7 @@ public final class StorageManager {
             }
         });
     }
+
     public CompletableFuture<Void> insert(final NickRecord record) {
         return submit(new SqlTask<Void>() {
             @Override public Void run(Connection conn) throws SQLException {
@@ -100,7 +109,7 @@ public final class StorageManager {
                     ps.setString(1,  record.realUuid().toString());
                     ps.setString(2,  record.realName());
                     ps.setString(3,  record.nickname());
-                    ps.setString(4,  record.rankUsed());
+                    ps.setString(4,  RANK_PLACEHOLDER);   // rank_used — legacy column
                     ps.setString(5,  record.skinSource());
                     ps.setString(6,  record.skinValue());
                     ps.setString(7,  record.skinSignature());
@@ -113,20 +122,24 @@ public final class StorageManager {
             }
         });
     }
+
     public CompletableFuture<Optional<NickRecord>> findLatestForPlayer(UUID uuid) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE real_uuid = ? ORDER BY id DESC LIMIT 1", uuid.toString());
     }
+
     public CompletableFuture<Optional<NickRecord>> findLastSetForPlayer(UUID uuid) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE real_uuid = ? AND action = 'SET' ORDER BY id DESC LIMIT 1",
                 uuid.toString());
     }
+
     public CompletableFuture<Optional<NickRecord>> findLatestByNickname(String nickname) {
         return queryOne("SELECT " + COLUMNS + " FROM nick_history "
                 + "WHERE LOWER(nickname) = LOWER(?) AND action = 'SET' "
                 + "ORDER BY id DESC LIMIT 1", nickname);
     }
+
     public void close() {
         try {
             this.executor.execute(new Runnable() {
@@ -161,6 +174,7 @@ public final class StorageManager {
         } catch (RejectedExecutionException e) { future.completeExceptionally(e); }
         return future;
     }
+
     private <T> T runWithRetry(SqlTask<T> task) throws SQLException {
         try { return task.run(openConnection()); }
         catch (Throwable first) {
@@ -170,6 +184,7 @@ public final class StorageManager {
             return task.run(openConnection());
         }
     }
+
     private CompletableFuture<Optional<NickRecord>> queryOne(
             final String sql, final String parameter) {
         return submit(new SqlTask<Optional<NickRecord>>() {
@@ -184,6 +199,7 @@ public final class StorageManager {
             }
         });
     }
+
     private Connection openConnection() throws SQLException {
         if (this.connection != null && !this.connection.isClosed()
                 && probe(this.connection)) {
@@ -206,12 +222,14 @@ public final class StorageManager {
         }
         return this.connection;
     }
+
     private static boolean probe(Connection connection) {
         try (Statement s = connection.createStatement()) {
             s.execute("SELECT 1");
             return true;
         } catch (SQLException | AbstractMethodError e) { return false; }
     }
+
     private void closeConnection() {
         if (this.connection == null) return;
         try { this.connection.close(); }
@@ -220,6 +238,7 @@ public final class StorageManager {
                     "Failed to close database connection", e);
         } finally { this.connection = null; }
     }
+
     private List<String> schema() {
         List<String> out = new ArrayList<String>();
         if (this.mysql) {
@@ -228,7 +247,7 @@ public final class StorageManager {
                     + "real_uuid VARCHAR(36) NOT NULL,"
                     + "real_name VARCHAR(16) NOT NULL,"
                     + "nickname VARCHAR(16) NOT NULL,"
-                    + "rank_used VARCHAR(16) NOT NULL,"
+                    + "rank_used VARCHAR(16) NOT NULL,"   // legacy, kept for compat
                     + "skin_source VARCHAR(64) NOT NULL,"
                     + "skin_value MEDIUMTEXT,"
                     + "skin_signature MEDIUMTEXT,"
@@ -244,7 +263,7 @@ public final class StorageManager {
                     + "real_uuid TEXT NOT NULL,"
                     + "real_name TEXT NOT NULL,"
                     + "nickname TEXT NOT NULL,"
-                    + "rank_used TEXT NOT NULL,"
+                    + "rank_used TEXT NOT NULL,"           // legacy, kept for compat
                     + "skin_source TEXT NOT NULL,"
                     + "skin_value TEXT,"
                     + "skin_signature TEXT,"
@@ -258,12 +277,13 @@ public final class StorageManager {
         }
         return out;
     }
+
+    /** Reads a row. The rank_used column is intentionally ignored. */
     private static NickRecord map(ResultSet rs) throws SQLException {
         return new NickRecord(
                 UUID.fromString(rs.getString("real_uuid")),
                 rs.getString("real_name"),
                 rs.getString("nickname"),
-                rs.getString("rank_used"),
                 rs.getString("skin_source"),
                 emptyIfNull(rs.getString("skin_value")),
                 emptyIfNull(rs.getString("skin_signature")),
@@ -271,12 +291,15 @@ public final class StorageManager {
                 rs.getLong("created_at"),
                 rs.getString("ip"));
     }
+
     private static String emptyIfNull(String value) { return value == null ? "" : value; }
+
     private static String setting(String key, String fallback) {
         String fromEnv = System.getenv(key);
         if (fromEnv != null && !fromEnv.trim().isEmpty()) return fromEnv.trim();
         return fallback == null ? "" : fallback;
     }
+
     private static int parsePort(String value) {
         try { return Integer.parseInt(value.trim()); }
         catch (NumberFormatException e) { return 3306; }

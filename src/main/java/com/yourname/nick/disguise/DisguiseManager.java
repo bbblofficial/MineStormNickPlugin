@@ -4,7 +4,6 @@ import com.yourname.nick.MineStormNickPlugin;
 import com.yourname.nick.integration.BedwarsLevelHook;
 import com.yourname.nick.model.DisguiseProfile;
 import com.yourname.nick.model.NickRecord;
-import com.yourname.nick.model.Rank;
 import com.yourname.nick.model.SkinData;
 import com.yourname.nick.packet.PacketManager;
 import com.yourname.nick.storage.StorageManager;
@@ -45,13 +44,14 @@ public final class DisguiseManager {
         return this.registry.get(uuid);
     }
 
-    public void apply(Player player, String nick, Rank rank, SkinData skin) {
-        DisguiseProfile profile = install(player, nick, rank, skin, true);
+    /** Apply a new nickname immediately, everywhere. */
+    public void apply(Player player, String nick, SkinData skin) {
+        DisguiseProfile profile = install(player, nick, skin, true);
         record(player, profile, ACTION_SET);
     }
 
     public void restore(final Player player, NickRecord stored) {
-        install(player, stored.nickname(), stored.rank(), stored.toSkinData(), false);
+        install(player, stored.nickname(), stored.toSkinData(), false);
         this.plugin.getServer().getScheduler().runTaskLater(this.plugin,
                 new Runnable() {
                     @Override
@@ -135,7 +135,6 @@ public final class DisguiseManager {
 
     private DisguiseProfile install(Player player,
                                     String nick,
-                                    Rank rank,
                                     SkinData skin,
                                     boolean refreshNow) {
         Optional<DisguiseProfile> previous = this.registry.get(player.getUniqueId());
@@ -149,7 +148,6 @@ public final class DisguiseManager {
                 player.getUniqueId(),
                 player.getName(),
                 nick,
-                rank,
                 skin,
                 this.bedwars.rollStars(),
                 active,
@@ -168,8 +166,7 @@ public final class DisguiseManager {
         if (target == null || !target.isOnline()) {
             return;
         }
-        // Defer by one tick so the plugin has time to settle and the
-        // tab-list entry exists before we overwrite it.
+        // Defer by one tick so the tab-list entry exists before we overwrite it.
         this.plugin.getServer().getScheduler().runTaskLater(this.plugin,
                 new Runnable() {
                     @Override
@@ -192,7 +189,6 @@ public final class DisguiseManager {
                 profile.realUuid(),
                 profile.realName(),
                 profile.nickname(),
-                profile.rank().name(),
                 profile.skin().sourceKey(),
                 profile.skin().value(),
                 profile.skin().signature(),

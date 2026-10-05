@@ -70,7 +70,7 @@ public final class MineStormNickPlugin extends JavaPlugin {
 
         if (!this.packets.enable()) {
             getLogger().severe(
-                    "MineStormNickSystem requires Paper 1.19.3 or newer (player info update packets). Disabling.");
+                    "MineStormNickSystem requires Spigot/Paper 1.8.8 (NMS v1_8_R3). Disabling.");
             getServer().getPluginManager().disablePlugin(this);
             return;
         }

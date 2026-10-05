@@ -1,39 +1,20 @@
 # -----------------------------------------------------------------------------
 # gui.yml - strings shown inside the /nick setup book.
 # Hot-reloadable with /minestormnicksystem reload.
+#
+# NOTE: The Rank page has been removed. Setup flow is now:
+#   Start -> Skin -> Name -> (Roller) -> Done
 # -----------------------------------------------------------------------------
 
 book:
   title:  "Nickname Setup"
   author: "MineStormNickSystem"
 
-rank:
-  title: ""
-  body:
-    - "&0Let's get you set up with your nickname!"
-    - "&0First, you'll need to choose which &lRANK&r&0 you would like to be shown as when nicked."
-    - ""
-  entries:
-    DEFAULT:
-      label: "&8> &7DEFAULT"
-      hover: "Play as the default rank"
-    VIP:
-      label: "&8> &aVIP"
-      hover: "Play as VIP"
-    VIP_PLUS:
-      label: "&8> &aVIP&6+"
-      hover: "Play as VIP+"
-    MVP:
-      label: "&8> &bMVP"
-      hover: "Play as MVP"
-    MVP_PLUS:
-      label: "&8> &bMVP&c+"
-      hover: "Play as MVP+"
-
 skin:
   title: ""
   body:
-    - "&0Awesome! Now, which &lSKIN&r&0 would you like to have while nicked?"
+    - "&0Let's get you set up with your nickname!"
+    - "&0First, choose which &lSKIN&r&0 you'd like to wear while nicked."
     - ""
   entries:
     normal:
@@ -52,7 +33,7 @@ skin:
 name:
   title: ""
   body:
-    - "&0Alright, now you'll need to choose the &lNAME&r&0 to use!"
+    - "&0Alright, now choose the &lNAME&r&0 you want to use!"
     - ""
   entries:
     random:
@@ -85,7 +66,7 @@ done:
   body:
     - "&0You have finished setting up your nickname!"
     - ""
-    - "&0You are now nicked as &8[&7%rank%&8] &7%name%&0."
+    - "&0You are now nicked as &7%name%&0."
     - ""
     - "&0To go back to being your usual self, type:"
     - "&c/nick reset"
@@ -93,5 +74,5 @@ done:
 buttons:
   start:
     label: "&a[ Start setup ]"
-    command: "/nick ui rank"
+    command: "/nick ui skin"
     hover: "Begin the setup"
