@@ -4,7 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.NickPlugin;
 import com.yourname.nick.model.SkinData;
 import com.yourname.nick.name.NameValidator;
 import com.yourname.nick.util.Async;
@@ -52,7 +52,7 @@ public final class SkinCacheManager {
         }
     }
 
-    private final MineStormNickPlugin plugin;
+    private final NickPlugin plugin;
     private final long ttlMillis;
     private final int  timeoutMillis;
     private final Path cacheDirectory;
@@ -62,7 +62,7 @@ public final class SkinCacheManager {
             new ConcurrentHashMap<String, CompletableFuture<Optional<SkinData>>>();
     private final List<SkinData> pool = new CopyOnWriteArrayList<SkinData>();
 
-    public SkinCacheManager(MineStormNickPlugin plugin) {
+    public SkinCacheManager(NickPlugin plugin) {
         this.plugin = plugin;
         FileConfiguration cfg = plugin.getConfig();
         this.ttlMillis = Math.max(1L, cfg.getLong("skins.cache-ttl-minutes", 1440L)) * 60000L;
@@ -234,7 +234,7 @@ public final class SkinCacheManager {
         connection.setConnectTimeout(this.timeoutMillis);
         connection.setReadTimeout(this.timeoutMillis);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("User-Agent", "MineStormNickSystem");
+        connection.setRequestProperty("User-Agent", "NickSystem");
         try {
             int status = connection.getResponseCode();
             if (status == 404 || status == 204) {

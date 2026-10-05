@@ -1,6 +1,6 @@
 package com.yourname.nick.command;
 
-import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.NickPlugin;
 import com.yourname.nick.integration.LuckPermsHook;
 import com.yourname.nick.message.Messages;
 import java.util.Collections;
@@ -11,13 +11,17 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.entity.Player;
 
+/**
+ * /g &lt;message&gt; - broadcasts a global message, but only for players in
+ * the configured LuckPerms group (default: "prime") or above.
+ */
 public final class GlobalCommand implements TabExecutor {
 
-    private final MineStormNickPlugin plugin;
+    private final NickPlugin plugin;
     private final Messages messages;
     private final LuckPermsHook luckPerms;
 
-    public GlobalCommand(MineStormNickPlugin plugin, Messages messages, LuckPermsHook luckPerms) {
+    public GlobalCommand(NickPlugin plugin, Messages messages, LuckPermsHook luckPerms) {
         this.plugin = plugin;
         this.messages = messages;
         this.luckPerms = luckPerms;

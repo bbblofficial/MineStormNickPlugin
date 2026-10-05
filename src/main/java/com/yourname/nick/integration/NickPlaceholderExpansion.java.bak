@@ -1,6 +1,6 @@
 package com.yourname.nick.integration;
 
-import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.NickPlugin;
 import com.yourname.nick.disguise.DisguiseRegistry;
 import com.yourname.nick.model.DisguiseProfile;
 import java.util.Locale;
@@ -13,11 +13,11 @@ import org.bukkit.OfflinePlayer;
 public final class NickPlaceholderExpansion
   extends PlaceholderExpansion
 {
-  private final MineStormNickPlugin plugin;
+  private final NickPlugin plugin;
   private final DisguiseRegistry registry;
   private final BedwarsLevelHook bedwars;
   
-  public NickPlaceholderExpansion(MineStormNickPlugin plugin, DisguiseRegistry registry, BedwarsLevelHook bedwars) {
+  public NickPlaceholderExpansion(NickPlugin plugin, DisguiseRegistry registry, BedwarsLevelHook bedwars) {
     this.plugin = plugin;
     this.registry = registry;
     this.bedwars = bedwars;

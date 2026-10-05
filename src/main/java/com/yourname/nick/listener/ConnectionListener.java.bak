@@ -1,6 +1,6 @@
 package com.yourname.nick.listener;
 
-import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.NickPlugin;
 import com.yourname.nick.disguise.DisguiseManager;
 import com.yourname.nick.disguise.DisguiseRegistry;
 import com.yourname.nick.gui.BookGUIManager;
@@ -24,7 +24,7 @@ import org.bukkit.event.player.PlayerQuitEvent;
 public final class ConnectionListener
   implements Listener
 {
-  private final MineStormNickPlugin plugin;
+  private final NickPlugin plugin;
   private final DisguiseRegistry registry;
   private final DisguiseManager disguises;
   private final StorageManager storage;
@@ -32,7 +32,7 @@ public final class ConnectionListener
   private final boolean persist;
   private final boolean maskMessages;
   
-  public ConnectionListener(MineStormNickPlugin plugin, DisguiseRegistry registry, DisguiseManager disguises, StorageManager storage, BookGUIManager bookGui) {
+  public ConnectionListener(NickPlugin plugin, DisguiseRegistry registry, DisguiseManager disguises, StorageManager storage, BookGUIManager bookGui) {
     this.plugin = plugin;
     this.registry = registry;
     this.disguises = disguises;

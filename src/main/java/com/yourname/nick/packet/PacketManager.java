@@ -1,7 +1,7 @@
 package com.yourname.nick.packet;
 
 import com.mojang.authlib.GameProfile;
-import com.yourname.nick.NickPlugin;
+import com.yourname.nick.MineStormNickPlugin;
 import com.yourname.nick.disguise.DisguiseRegistry;
 import com.yourname.nick.model.DisguiseProfile;
 import java.lang.reflect.Field;
@@ -25,7 +25,7 @@ import org.bukkit.entity.Player;
  */
 public final class PacketManager {
 
-    private final NickPlugin plugin;
+    private final MineStormNickPlugin plugin;
     private final DisguiseRegistry registry;
 
     private Class<?> packetInfoClass;
@@ -48,7 +48,7 @@ public final class PacketManager {
 
     private boolean enabled = false;
 
-    public PacketManager(NickPlugin plugin, DisguiseRegistry registry) {
+    public PacketManager(MineStormNickPlugin plugin, DisguiseRegistry registry) {
         this.plugin = plugin;
         this.registry = registry;
     }

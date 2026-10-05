@@ -1,25 +1,19 @@
 # -----------------------------------------------------------------------------
-# gui.yml — every string shown inside the /nick setup book.
-# Colour codes: legacy '&' codes. `\n` is a literal newline inside the page.
-# Hot-reloadable with /nicksystem reload.
-#
-# Structured as: one section per page (title / body / buttons).
-# Every string is optional — missing entries fall back to a sensible default.
+# gui.yml - every string shown inside the /nick setup book.
+# '&' legacy colour codes. Hot-reloadable with /minestormnicksystem reload.
 # -----------------------------------------------------------------------------
 
 book:
   title:  "Nickname Setup"
-  author: "NickSystem"
+  author: "MineStormNickSystem"
 
-# ── STEP 1 — RANK ──────────────────────────────────────────────────────────
+# -- STEP 1 - RANK -----------------------------------------------------------
 rank:
   title: ""
   body:
     - "&0Let's get you set up with your nickname!"
     - "&0First, you'll need to choose which &lRANK&r&0 you would like to be shown as when nicked."
     - ""
-  # Rank entries are auto-generated from the Rank enum, but you can override
-  # their label and hover text here. Key = Rank enum name.
   entries:
     DEFAULT:
       label: "&8➤ &7DEFAULT"
@@ -37,7 +31,7 @@ rank:
       label: "&8➤ &bMVP&c+"
       hover: "Play as MVP+"
 
-# ── STEP 2 — SKIN ──────────────────────────────────────────────────────────
+# -- STEP 2 - SKIN -----------------------------------------------------------
 skin:
   title: ""
   body:
@@ -57,7 +51,7 @@ skin:
       label: "&8➤ &1Reuse [Previous Skin]"
       hover: "Use the skin from your last nickname"
 
-# ── STEP 3 — NAME ──────────────────────────────────────────────────────────
+# -- STEP 3 - NAME -----------------------------------------------------------
 name:
   title: ""
   body:
@@ -75,7 +69,7 @@ name:
     - "&0To go back to being your usual self, type:"
     - "&c/nick reset"
 
-# ── STEP 4 — RANDOM NAME ───────────────────────────────────────────────────
+# -- STEP 4 - RANDOM NAME ----------------------------------------------------
 rolled:
   title: ""
   body:
@@ -90,7 +84,7 @@ rolled:
       label: "&c&l[TRY AGAIN]"
       hover: "Generate a different name"
 
-# ── STEP 5 — CONFIRMATION ──────────────────────────────────────────────────
+# -- STEP 5 - CONFIRMATION ---------------------------------------------------
 done:
   title: ""
   body:
@@ -102,7 +96,7 @@ done:
     - "&0To go back to being your usual self, type:"
     - "&c/nick reset"
 
-# ── Generic book chrome ────────────────────────────────────────────────────
+# -- Generic book chrome -----------------------------------------------------
 buttons:
   start:
     label: "&a[ Start setup ]"

@@ -1,9 +1,9 @@
-name: NickSystem
+name: MineStormNickSystem
 version: '1.0.0'
-main: com.yourname.nick.NickPlugin
+main: com.yourname.nick.MineStormNickPlugin
 api-version: '1.8'
-description: Nickname system for Spigot/Paper 1.8.8 (built for JDK 8+).
-authors: [YourName]
+description: MineStormNickSystem - nickname system for Spigot/Paper 1.8.8 (JDK 8+).
+authors: [MineStorm]
 softdepend: [PlaceholderAPI, LuckPerms]
 
 commands:
@@ -15,11 +15,11 @@ commands:
     description: Look up the real identity behind a nickname.
     usage: /realname <nick>
     permission: nick.staff
-  nicksystem:
-    description: Manage the NickSystem plugin.
-    usage: /nicksystem reload
-    aliases: [ns]
-    permission: nicksystem.admin
+  minestormnicksystem:
+    description: Manage MineStormNickSystem.
+    usage: /minestormnicksystem reload
+    aliases: [msns]
+    permission: minestormnicksystem.admin
   g:
     description: Global chat for ranked players.
     usage: /g <message>
@@ -37,9 +37,9 @@ permissions:
   nick.staff:
     description: Use /realname.
     default: op
-  nicksystem.admin:
-    description: Use /nicksystem reload.
+  minestormnicksystem.admin:
+    description: Use /minestormnicksystem reload.
     default: op
-  nicksystem.global:
+  minestormnicksystem.global:
     description: Fallback permission for /g when LuckPerms is not installed.
     default: op

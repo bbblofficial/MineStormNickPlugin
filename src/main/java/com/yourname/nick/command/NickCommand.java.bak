@@ -1,6 +1,6 @@
 package com.yourname.nick.command;
 
-import com.yourname.nick.MineStormNickPlugin;
+import com.yourname.nick.NickPlugin;
 import com.yourname.nick.disguise.DisguiseManager;
 import com.yourname.nick.gui.BookGUIManager;
 import com.yourname.nick.message.Messages;
@@ -23,14 +23,14 @@ import org.bukkit.entity.Player;
 
 public final class NickCommand implements TabExecutor {
 
-    private final MineStormNickPlugin plugin;
+    private final NickPlugin plugin;
     private final Messages messages;
     private final BookGUIManager bookGui;
     private final DisguiseManager disguises;
     private final SkinCacheManager skins;
     private final NameValidator validator;
 
-    public NickCommand(MineStormNickPlugin plugin,
+    public NickCommand(NickPlugin plugin,
                        Messages messages,
                        BookGUIManager bookGui,
                        DisguiseManager disguises,

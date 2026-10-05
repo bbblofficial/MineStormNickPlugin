@@ -1,8 +1,8 @@
 package com.yourname.nick;
 
 import com.yourname.nick.command.GlobalCommand;
+import com.yourname.nick.command.MineStormNickSystemCommand;
 import com.yourname.nick.command.NickCommand;
-import com.yourname.nick.command.NickSystemCommand;
 import com.yourname.nick.command.RealNameCommand;
 import com.yourname.nick.disguise.DisguiseManager;
 import com.yourname.nick.disguise.DisguiseRegistry;
@@ -32,7 +32,7 @@ import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
-public final class NickPlugin extends JavaPlugin {
+public final class MineStormNickPlugin extends JavaPlugin {
 
     private DisguiseRegistry registry;
     private PacketManager    packets;
@@ -48,7 +48,7 @@ public final class NickPlugin extends JavaPlugin {
     private LuckPermsHook    luckPerms;
     private Runnable         placeholderCleanup;
 
-    /** Tracked so /reload and /nicksystem reload cannot stack duplicates. */
+    /** Tracked to prevent duplicate scheduler tasks across reloads. */
     private BukkitTask actionBarTask;
     private BukkitTask pruneTask;
 
@@ -72,7 +72,7 @@ public final class NickPlugin extends JavaPlugin {
 
         if (!this.packets.enable()) {
             getLogger().severe(
-                    "NickSystem requires Paper 1.19.3 or newer (player info update packets). Disabling.");
+                    "MineStormNickSystem requires Paper 1.19.3 or newer (player info update packets). Disabling.");
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -81,11 +81,10 @@ public final class NickPlugin extends JavaPlugin {
         this.storage.initialize().whenComplete((ignored, error) -> {
             if (error != null) {
                 getLogger().log(Level.SEVERE,
-                        "Database initialisation failed; disabling NickSystem.", error);
-                Async.main(NickPlugin.this, new Runnable() {
-                    @Override
-                    public void run() {
-                        getServer().getPluginManager().disablePlugin(NickPlugin.this);
+                        "Database initialisation failed; disabling MineStormNickSystem.", error);
+                Async.main(MineStormNickPlugin.this, new Runnable() {
+                    @Override public void run() {
+                        getServer().getPluginManager().disablePlugin(MineStormNickPlugin.this);
                     }
                 });
             }
@@ -116,7 +115,7 @@ public final class NickPlugin extends JavaPlugin {
                                            this.disguises, this.skins, this.validator));
         bind("realname",   new RealNameCommand(this, this.messages,
                                                this.registry, this.storage));
-        bind("nicksystem", new NickSystemCommand(this));
+        bind("minestormnicksystem", new MineStormNickSystemCommand(this));
         bind("g",          new GlobalCommand(this, this.messages, this.luckPerms));
 
         scheduleTasks();
@@ -126,10 +125,7 @@ public final class NickPlugin extends JavaPlugin {
                     new NickPlaceholderExpansion(this, this.registry, this.bedwars);
             expansion.register();
             this.placeholderCleanup = new Runnable() {
-                @Override
-                public void run() {
-                    expansion.unregister();
-                }
+                @Override public void run() { expansion.unregister(); }
             };
         }
     }
@@ -154,7 +150,6 @@ public final class NickPlugin extends JavaPlugin {
     /*  Reload                                                            */
     /* ------------------------------------------------------------------ */
 
-    /** Called by /nicksystem reload. Never throws. */
     public void reloadEverything() {
         try {
             reloadConfig();
@@ -178,7 +173,7 @@ public final class NickPlugin extends JavaPlugin {
             cancelTasks();
             scheduleTasks();
 
-            getLogger().info("NickSystem reloaded.");
+            getLogger().info("MineStormNickSystem reloaded.");
         } catch (Throwable t) {
             getLogger().log(Level.SEVERE, "Reload failed", t);
         }
@@ -201,10 +196,7 @@ public final class NickPlugin extends JavaPlugin {
         }
         this.pruneTask = getServer().getScheduler().runTaskTimerAsynchronously(
                 this, new Runnable() {
-                    @Override
-                    public void run() {
-                        registry.prunePending(60000L);
-                    }
+                    @Override public void run() { registry.prunePending(60000L); }
                 }, 1200L, 1200L);
     }
 
@@ -221,20 +213,15 @@ public final class NickPlugin extends JavaPlugin {
 
     private YamlConfiguration loadNames() {
         File file = new File(getDataFolder(), "names.yml");
-        if (!file.exists()) {
-            saveResource("names.yml", false);
-        }
+        if (!file.exists()) saveResource("names.yml", false);
         return YamlConfiguration.loadConfiguration(file);
     }
 
     private void saveResourceIfMissing(String name) {
         File f = new File(getDataFolder(), name);
         if (!f.exists()) {
-            try {
-                saveResource(name, false);
-            } catch (IllegalArgumentException ignored) {
-                // Resource not bundled - ignore.
-            }
+            try { saveResource(name, false); }
+            catch (IllegalArgumentException ignored) { }
         }
     }
 
