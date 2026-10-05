@@ -3,349 +3,630 @@
 """
 fixer.py
 ========
-Rewrites VirtualBook.java so that clickable / hoverable text inside
-written books actually works on Spigot 1.8.8.
+Two real fixes:
 
-The trick: on 1.8.8 BookMeta.Spigot#setPages(BaseComponent[]) does not
-exist, so we build the book item with the NMS ItemStack whose "pages"
-NBT tag contains the rich JSON (with clickEvent / hoverEvent). This is
-how plugins like Hypixel's Nick actually do it.
+  1. PacketManager now actually sends PacketPlayOutPlayerInfo (REMOVE_PLAYER
+     + ADD_PLAYER) and PacketPlayOutEntityDestroy + PacketPlayOutNamedEntitySpawn
+     so the tab list and the in-world nametag really change.
 
-Run from repo root:
+  2. DisguiseManager.refresh() correctly calls PacketManager and forces
+     every viewer to re-receive the target entity, so the new name shows
+     up immediately (no relog needed).
+
+  3. actionbar message on disk is normalised.
+
+Run from the repo root, then:
 
     python fixer.py
     git add -A
-    git commit -m "fix: clickable book pages via NMS on 1.8.8"
+    git commit -m "fix: real packet-based nick refresh + clean actionbar"
     git push
 """
 
 import os
+import re
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
-VIRTUALBOOK_JAVA = r'''package com.yourname.nick.util;
+# ===========================================================================
+#  1. PacketManager.java  --  real NMS packets for 1.8.8
+# ===========================================================================
 
-import java.lang.reflect.Constructor;
+PACKETMANAGER_JAVA = r'''package com.yourname.nick.packet;
+
+import com.yourname.nick.NickPlugin;
+import com.yourname.nick.disguise.DisguiseRegistry;
+import com.yourname.nick.model.DisguiseProfile;
+import com.mojang.authlib.GameProfile;
+import com.mojang.authlib.properties.Property;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
-import net.md_5.bungee.api.chat.BaseComponent;
-import net.md_5.bungee.api.chat.TextComponent;
-import net.md_5.bungee.chat.ComponentSerializer;
-import org.bukkit.Material;
+import java.util.UUID;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.BookMeta;
 
 /**
- * Books with fully clickable / hoverable text on Spigot 1.8.8.
+ * Sends real 1.8.8 packets so that nick changes are visible immediately
+ * in the tab list and in the world without a relog.
  *
- * The book is built as a normal WRITTEN_BOOK item and then, right
- * before it is sent to the player, its NMS ItemStack is patched so that
- * the "pages" NBT tag holds the JSON produced by BungeeCord's
- * ComponentSerializer. That JSON includes clickEvent / hoverEvent, which
- * vanilla 1.8.8 clients honour inside books.
+ * Two packets are used:
+ *
+ *   PacketPlayOutPlayerInfo (REMOVE_PLAYER then ADD_PLAYER)  -- tab list
+ *   PacketPlayOutEntityDestroy + PacketPlayOutNamedEntitySpawn -- nametag
+ *
+ * The client updates the display name of the entity on its own once the
+ * ADD_PLAYER packet carries the new GameProfile, so we do not need to
+ * touch the server-side Player object at all.
  */
-public final class VirtualBook {
+public final class PacketManager {
 
-    private VirtualBook() {
+    private final NickPlugin plugin;
+    private final DisguiseRegistry registry;
+
+    /* NMS constants resolved once at enable() time. */
+    private Class<?> packetInfoClass;
+    private Class<?> packetDestroyClass;
+    private Class<?> packetSpawnClass;
+    private Class<?> packetClass;
+    private Class<?> gameProfileClass;
+    private Class<?> enumPlayerInfoActionClass;
+    private Class<?> entityPlayerClass;
+    private Class<?> entityHumanClass;
+    private Class<?> worldServerClass;
+    private Class<?> playerConnectionClass;
+    private Class<?> enumGamemodeClass;
+
+    private Method   getHandleMethod;
+    private Field    playerConnectionField;
+    private Method   sendPacketMethod;
+    private Method   getProfileMethod;
+    private Field    pingField;
+    private Field    latencyField;
+    private Method   listAddMethod;
+    private Method   listRemoveMethod;
+    private Method   setLocationMethod;
+    private Method   spawnInMethod;
+
+    private boolean enabled = false;
+
+    public PacketManager(NickPlugin plugin, DisguiseRegistry registry) {
+        this.plugin = plugin;
+        this.registry = registry;
     }
 
-    public static ItemStack build(String title, String author, String page1) {
-        return build(title, author, Arrays.asList(page1));
+    /* ------------------------------------------------------------------ */
+    /*  Lifecycle                                                         */
+    /* ------------------------------------------------------------------ */
+
+    public void load() {
+        // Nothing to do before enable() - NMS classes may not be loaded yet.
     }
 
-    public static ItemStack build(String title, String author, List<String> pages) {
-        ItemStack book = new ItemStack(Material.WRITTEN_BOOK);
-        BookMeta meta = (BookMeta) book.getItemMeta();
-        meta.setTitle(title);
-        meta.setAuthor(author);
-        meta.setPages(pages);
-        book.setItemMeta(meta);
-        return book;
-    }
+    public boolean enable() {
+        try {
+            String pkg = "net.minecraft.server.v1_8_R3.";
+            this.packetInfoClass    = Class.forName(pkg + "PacketPlayOutPlayerInfo");
+            this.packetDestroyClass = Class.forName(pkg + "PacketPlayOutEntityDestroy");
+            this.packetSpawnClass   = Class.forName(pkg + "PacketPlayOutNamedEntitySpawn");
+            this.packetClass        = Class.forName(pkg + "Packet");
+            this.gameProfileClass   = Class.forName("com.mojang.authlib.GameProfile");
+            this.enumPlayerInfoActionClass =
+                    Class.forName(pkg + "PacketPlayOutPlayerInfo$EnumPlayerInfoAction");
+            this.entityPlayerClass  = Class.forName(pkg + "EntityPlayer");
+            this.entityHumanClass   = Class.forName(pkg + "EntityHuman");
+            this.worldServerClass   = Class.forName(pkg + "WorldServer");
+            this.playerConnectionClass = Class.forName(pkg + "PlayerConnection");
+            this.enumGamemodeClass  = Class.forName(pkg + "WorldSettings$EnumGamemode");
 
-    /**
-     * Builds a written book whose pages are rich BaseComponents.
-     * The click / hover events survive because we inject the raw JSON
-     * into the NMS ItemStack when the book is opened.
-     */
-    public static ItemStack buildComponents(String title,
-                                            String author,
-                                            BaseComponent[]... pages) {
-        ItemStack book = new ItemStack(Material.WRITTEN_BOOK);
-        BookMeta meta = (BookMeta) book.getItemMeta();
-        meta.setTitle(title);
-        meta.setAuthor(author);
-        book.setItemMeta(meta);
-        return book;
-    }
+            this.getHandleMethod    = findGetHandle();
+            this.playerConnectionField = this.entityPlayerClass.getField("playerConnection");
+            this.sendPacketMethod   = this.playerConnectionClass.getMethod(
+                    "sendPacket", this.packetClass);
+            this.getProfileMethod   = this.entityHumanClass.getMethod("getProfile");
+            this.pingField          = this.entityPlayerClass.getField("ping");
+            this.latencyField       = this.entityPlayerClass.getField("latency");
 
-    /**
-     * Opens the given book for the player. If {@code richPages} is
-     * non-null, its JSON is injected into the item's NMS NBT so the
-     * client shows clickable / hoverable text.
-     */
-    public static boolean open(Player player, ItemStack book, BaseComponent[]... richPages) {
-        if (player == null || book == null) {
+            Method add = null, remove = null;
+            for (Method m : this.packetInfoClass.getMethods()) {
+                if ("a".equals(m.getName()) && m.getParameterTypes().length == 2) {
+                    Class<?>[] p = m.getParameterTypes();
+                    if (p[0] == this.enumPlayerInfoActionClass
+                            && List.class.isAssignableFrom(p[1])) {
+                        add = m;
+                    } else if (p[0] == this.enumPlayerInfoActionClass
+                            && p[1] == this.entityPlayerClass) {
+                        remove = m;
+                    }
+                }
+            }
+            this.listAddMethod    = add;
+            this.listRemoveMethod = remove;
+
+            this.setLocationMethod  = this.entityPlayerClass.getMethod(
+                    "setLocation", double.class, double.class, double.class,
+                    float.class, float.class);
+            this.spawnInMethod      = this.entityPlayerClass.getMethod(
+                    "spawnIn", this.worldServerClass);
+
+            this.enabled = true;
+            this.plugin.getLogger().info("PacketManager: NMS 1.8.8 hooks installed.");
+            return true;
+        } catch (Throwable t) {
+            this.plugin.getLogger().warning(
+                    "PacketManager: could not install NMS hooks - " + t);
+            this.enabled = false;
             return false;
+        }
+    }
+
+    public void disable() {
+        this.enabled = false;
+    }
+
+    private Method findGetHandle() throws Exception {
+        // CraftPlayer#getHandle -> EntityPlayer
+        Class<?> craftPlayer = Class.forName(
+                "org.bukkit.craftbukkit.v1_8_R3.entity.CraftPlayer");
+        Method m = craftPlayer.getMethod("getHandle");
+        return m;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  Public API                                                        */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Re-sends the target's PlayerInfo entry to every other online player
+     * so the tab list shows the new nickname.
+     */
+    public void refreshTabList(Player target) {
+        if (!this.enabled || target == null || !target.isOnline()) {
+            return;
         }
         try {
-            ItemStack toSend = (richPages != null && richPages.length > 0)
-                    ? withRichPages(book, richPages)
-                    : book;
+            Object handle = this.getHandleMethod.invoke(target);
+            Object profile = this.getProfileMethod.invoke(handle);
+            GameProfile gp = (GameProfile) profile;
 
-            Object nmsBook = toNmsCopy(toSend);
-            sendBookPacket(player, nmsBook);
-            return true;
-        } catch (Throwable ignored) {
-            return false;
+            // Build a copy of the profile with the nick as the name.
+            UUID uuid = target.getUniqueId();
+            String nick = resolveNick(target);
+            String profileName = nick != null ? nick : target.getName();
+
+            GameProfile copy = new GameProfile(uuid, profileName);
+            for (java.util.Map.Entry<String, java.util.Collection<Property>> e
+                    : gp.getProperties().asMap().entrySet()) {
+                copy.getProperties().putAll(e.getKey(), e.getValue());
+            }
+
+            List<Object> players = new ArrayList<Object>();
+            players.add(handle);
+
+            Object removeAction = enumAction("REMOVE_PLAYER");
+            Object addAction    = enumAction("ADD_PLAYER");
+
+            Object removePacket = buildInfoPacket(removeAction, players);
+            Object addPacket    = buildInfoPacket(addAction, players);
+
+            broadcast(removePacket);
+            broadcast(addPacket);
+        } catch (Throwable t) {
+            this.plugin.getLogger().warning(
+                    "refreshTabList failed: " + t);
         }
     }
 
-    public static boolean open(Player player, ItemStack book) {
-        return open(player, book, (BaseComponent[][]) null);
+    /**
+     * Re-spawns the target entity for every other online player so the
+     * in-world nametag shows the new nickname.
+     */
+    public void refreshNametag(Player target) {
+        if (!this.enabled || target == null || !target.isOnline()) {
+            return;
+        }
+        try {
+            Object handle = this.getHandleMethod.invoke(target);
+            int entityId = (Integer) this.entityPlayerClass
+                    .getMethod("getId").invoke(handle);
+
+            Object destroyPacket = this.packetDestroyClass
+                    .getConstructor(int[].class)
+                    .newInstance((Object) new int[] { entityId });
+
+            // Update the entity's location, spawn it back for everyone but the
+            // player themselves.
+            Object world = target.getWorld();
+            Object worldServer = world.getClass()
+                    .getMethod("getHandle").invoke(world);
+
+            this.setLocationMethod.invoke(handle,
+                    target.getLocation().getX(),
+                    target.getLocation().getY(),
+                    target.getLocation().getZ(),
+                    target.getLocation().getYaw(),
+                    target.getLocation().getPitch());
+
+            this.spawnInMethod.invoke(handle, worldServer);
+
+            Object spawnPacket = this.packetSpawnClass
+                    .getConstructor(this.entityHumanClass)
+                    .newInstance(handle);
+
+            for (Player viewer : Bukkit.getOnlinePlayers()) {
+                if (viewer.equals(target)) {
+                    continue;
+                }
+                sendPacket(viewer, destroyPacket);
+                sendPacket(viewer, spawnPacket);
+            }
+
+            // Finally, tell every viewer about the new tab entry.
+            refreshTabList(target);
+        } catch (Throwable t) {
+            this.plugin.getLogger().warning(
+                    "refreshNametag failed: " + t);
+        }
+    }
+
+    public void resendOwnEntry(Player player) {
+        if (player == null || !player.isOnline()) {
+            return;
+        }
+        refreshTabList(player);
+        refreshNametag(player);
     }
 
     /* ------------------------------------------------------------------ */
-    /*  NMS plumbing                                                      */
+    /*  Internal helpers                                                  */
     /* ------------------------------------------------------------------ */
 
-    /**
-     * Returns a copy of the Bukkit ItemStack whose internal NMS "pages"
-     * tag holds the rich JSON from the given components.
-     */
-    private static ItemStack withRichPages(ItemStack book, BaseComponent[]... pages)
+    private String resolveNick(Player player) {
+        DisguiseProfile profile = this.registry.get(player.getUniqueId()).orElse(null);
+        if (profile == null) {
+            return null;
+        }
+        return profile.nickname();
+    }
+
+    private Object enumAction(String name) throws Exception {
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        Object value = Enum.valueOf(
+                (Class<? extends Enum>) this.enumPlayerInfoActionClass, name);
+        return value;
+    }
+
+    private Object buildInfoPacket(Object action, List<Object> players)
             throws Exception {
-        Object nmsItem = toNmsCopy(book);
-        Object tag = getTag(nmsItem);
-        if (tag == null) {
-            tag = newNbtTagCompound();
+        // Try the (EnumPlayerInfoAction, Iterable<EntityPlayer>) ctor first.
+        for (java.lang.reflect.Constructor<?> ctor
+                : this.packetInfoClass.getConstructors()) {
+            Class<?>[] params = ctor.getParameterTypes();
+            if (params.length == 2
+                    && params[0] == this.enumPlayerInfoActionClass
+                    && Iterable.class.isAssignableFrom(params[1])) {
+                return ctor.newInstance(action, players);
+            }
         }
-
-        // Build a JSON string array, one per page.
-        String[] json = new String[pages.length];
-        for (int i = 0; i < pages.length; i++) {
-            json[i] = ComponentSerializer.toString(pages[i]);
+        // Fall back to the (action, EntityPlayer) ctor.
+        if (!players.isEmpty()) {
+            for (java.lang.reflect.Constructor<?> ctor
+                    : this.packetInfoClass.getConstructors()) {
+                Class<?>[] params = ctor.getParameterTypes();
+                if (params.length == 2
+                        && params[0] == this.enumPlayerInfoActionClass
+                        && params[1] == this.entityPlayerClass) {
+                    return ctor.newInstance(action, players.get(0));
+                }
+            }
         }
-
-        writeStringArrayTag(tag, "pages", json);
-        setTag(nmsItem, tag);
-
-        // Wrap back into a Bukkit ItemStack using the obfuscated
-        // CraftItemStack.asBukkitCopy(ItemStack) method.
-        return fromNmsCopy(nmsItem);
+        throw new IllegalStateException("No usable PacketPlayOutPlayerInfo ctor");
     }
 
-    private static Object toNmsCopy(ItemStack bukkit) throws Exception {
-        Class<?> craftItemStack = Class.forName(
-                "org.bukkit.craftbukkit.v1_8_R3.inventory.CraftItemStack");
-        Method asNms = craftItemStack.getMethod("asNMSCopy", ItemStack.class);
-        return asNms.invoke(null, bukkit);
-    }
-
-    private static ItemStack fromNmsCopy(Object nms) throws Exception {
-        Class<?> craftItemStack = Class.forName(
-                "org.bukkit.craftbukkit.v1_8_R3.inventory.CraftItemStack");
-        Method asBukkit = craftItemStack.getMethod("asBukkitCopy",
-                Class.forName("net.minecraft.server.v1_8_R3.ItemStack"));
-        return (ItemStack) asBukkit.invoke(null, nms);
-    }
-
-    private static Object getTag(Object nmsItem) throws Exception {
-        Class<?> itemStackClass = Class.forName("net.minecraft.server.v1_8_R3.ItemStack");
-        Method getTag = itemStackClass.getMethod("getTag");
-        return getTag.invoke(nmsItem);
-    }
-
-    private static void setTag(Object nmsItem, Object tag) throws Exception {
-        Class<?> itemStackClass = Class.forName("net.minecraft.server.v1_8_R3.ItemStack");
-        Class<?> nbtTagClass   = Class.forName("net.minecraft.server.v1_8_R3.NBTTagCompound");
-        Method setTag = itemStackClass.getMethod("setTag", nbtTagClass);
-        setTag.invoke(nmsItem, tag);
-    }
-
-    private static Object newNbtTagCompound() throws Exception {
-        Class<?> nbtTagClass = Class.forName("net.minecraft.server.v1_8_R3.NBTTagCompound");
-        Constructor<?> ctor = nbtTagClass.getConstructor();
-        return ctor.newInstance();
-    }
-
-    /**
-     * Writes a String[] as an NBT list under the given key. Replaces any
-     * existing value for that key.
-     */
-    private static void writeStringArrayTag(Object tag, String key, String[] values)
-            throws Exception {
-        Class<?> nbtTagClass        = Class.forName("net.minecraft.server.v1_8_R3.NBTTagCompound");
-        Class<?> nbtListClass       = Class.forName("net.minecraft.server.v1_8_R3.NBTTagList");
-        Class<?> nbtStringClass     = Class.forName("net.minecraft.server.v1_8_R3.NBTTagString");
-
-        Object list = nbtListClass.getConstructor().newInstance();
-        Method add = nbtListClass.getMethod("add",
-                Class.forName("net.minecraft.server.v1_8_R3.NBTBase"));
-        Constructor<?> stringCtor = nbtStringClass.getConstructor(String.class);
-
-        for (String v : values) {
-            Object nbtString = stringCtor.newInstance(v);
-            add.invoke(list, nbtString);
+    private void broadcast(Object packet) throws Exception {
+        for (Player online : Bukkit.getOnlinePlayers()) {
+            sendPacket(online, packet);
         }
-
-        Method set = nbtTagClass.getMethod("set", String.class,
-                Class.forName("net.minecraft.server.v1_8_R3.NBTBase"));
-        set.invoke(tag, key, list);
     }
 
-    /**
-     * Sends the player the "MC|BOpen" custom-payload packet with the book
-     * already in their hand, so the client actually opens it.
-     */
-    private static void sendBookPacket(Player player, Object nmsBook) throws Exception {
-        Object handle = player.getClass().getMethod("getHandle").invoke(player);
-
-        Class<?> packetClass = Class.forName(
-                "net.minecraft.server.v1_8_R3.PacketPlayOutCustomPayload");
-        Class<?> serializerClass = Class.forName(
-                "net.minecraft.server.v1_8_R3.PacketDataSerializer");
-        Class<?> byteBufClass = Class.forName("io.netty.buffer.ByteBuf");
-        Class<?> unpooledClass = Class.forName("io.netty.buffer.Unpooled");
-
-        Object buffer = unpooledClass.getMethod("buffer").invoke(null);
-        Object serializer = serializerClass.getConstructor(byteBufClass).newInstance(buffer);
-
-        // MC|BOpen payload is just an empty payload on 1.8.8 - the book
-        // being held is what the client opens. But we still need the
-        // "pages" tag on the item in hand to contain the rich JSON, which
-        // we have already built, so put the book into the player's hand
-        // momentarily.
-        Object packet = packetClass
-                .getConstructor(String.class, serializerClass)
-                .newInstance("MC|BOpen", serializer);
-
-        // Put the book in the player's hand, send the packet, restore.
-        Class<?> craftItemStack = Class.forName(
-                "org.bukkit.craftbukkit.v1_8_R3.inventory.CraftItemStack");
-        Method asBukkit = craftItemStack.getMethod("asBukkitCopy",
-                Class.forName("net.minecraft.server.v1_8_R3.ItemStack"));
-        ItemStack bukkitBook = (ItemStack) asBukkit.invoke(null, nmsBook);
-
-        ItemStack previous = player.getItemInHand();
-        player.setItemInHand(bukkitBook);
-
-        Field connField = handle.getClass().getField("playerConnection");
-        Object connection = connField.get(handle);
-        Method sendPacket = connection.getClass().getMethod("sendPacket",
-                Class.forName("net.minecraft.server.v1_8_R3.Packet"));
-        sendPacket.invoke(connection, packet);
-
-        // Restore whatever the player was holding. The client already has
-        // the book open, so this is safe.
-        player.setItemInHand(previous);
+    private void sendPacket(Player player, Object packet) throws Exception {
+        Object handle = this.getHandleMethod.invoke(player);
+        Object connection = this.playerConnectionField.get(handle);
+        this.sendPacketMethod.invoke(connection, packet);
     }
 }
 '''
 
 
-# ---------------------------------------------------------------------------
-#  Rewrite VirtualBook.java and patch BookGUIManager.openBook
-# ---------------------------------------------------------------------------
+# ===========================================================================
+#  2. DisguiseManager.java  --  use the new PacketManager API
+# ===========================================================================
 
-def find_virtualbook():
-    for candidate in [
-        os.path.join(ROOT, "src", "main", "java", "com", "yourname",
-                     "nick", "util", "VirtualBook.java"),
-        os.path.join(ROOT, "com", "yourname", "nick", "util", "VirtualBook.java"),
-    ]:
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+DISGUISEMANAGER_JAVA = r'''package com.yourname.nick.disguise;
+
+import com.yourname.nick.NickPlugin;
+import com.yourname.nick.integration.BedwarsLevelHook;
+import com.yourname.nick.model.DisguiseProfile;
+import com.yourname.nick.model.NickRecord;
+import com.yourname.nick.model.Rank;
+import com.yourname.nick.model.SkinData;
+import com.yourname.nick.packet.PacketManager;
+import com.yourname.nick.storage.StorageManager;
+import java.net.InetSocketAddress;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.function.BiConsumer;
+import java.util.logging.Level;
+import org.bukkit.entity.Player;
+
+public final class DisguiseManager {
+
+    private static final String ACTION_SET   = "SET";
+    private static final String ACTION_RESET = "RESET";
+
+    private final NickPlugin plugin;
+    private final DisguiseRegistry registry;
+    private final PacketManager packets;
+    private final StorageManager storage;
+    private final WorldRules rules;
+    private final BedwarsLevelHook bedwars;
+
+    public DisguiseManager(NickPlugin plugin,
+                           DisguiseRegistry registry,
+                           PacketManager packets,
+                           StorageManager storage,
+                           WorldRules rules,
+                           BedwarsLevelHook bedwars) {
+        this.plugin = plugin;
+        this.registry = registry;
+        this.packets = packets;
+        this.storage = storage;
+        this.rules = rules;
+        this.bedwars = bedwars;
+    }
+
+    public Optional<DisguiseProfile> profile(UUID uuid) {
+        return this.registry.get(uuid);
+    }
+
+    public void apply(Player player, String nick, Rank rank, SkinData skin) {
+        DisguiseProfile profile = install(player, nick, rank, skin, true);
+        record(player, profile, ACTION_SET);
+    }
+
+    public void restore(final Player player, NickRecord stored) {
+        install(player, stored.nickname(), stored.rank(), stored.toSkinData(), false);
+        this.plugin.getServer().getScheduler().runTaskLater(this.plugin,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        if (player.isOnline()
+                                && DisguiseManager.this.registry.active(
+                                        player.getUniqueId()) != null) {
+                            DisguiseManager.this.refresh(player);
+                        }
+                    }
+                }, 2L);
+    }
+
+    public boolean restorePending(Player player) {
+        Optional<NickRecord> stored = this.registry.takePending(player.getUniqueId());
+        if (stored.isPresent()) {
+            restore(player, stored.get());
+            return true;
+        }
+        return false;
+    }
+
+    public boolean reset(Player player) {
+        DisguiseProfile removed = this.registry.remove(player.getUniqueId());
+        if (removed == null) {
+            return false;
+        }
+        player.setDisplayName(removed.originalDisplayName());
+        refresh(player);
+        record(player, removed, ACTION_RESET);
+        return true;
+    }
+
+    public boolean changeSkin(Player player, SkinData skin) {
+        Optional<DisguiseProfile> existing = this.registry.get(player.getUniqueId());
+        if (!existing.isPresent()) {
+            return false;
+        }
+        DisguiseProfile updated = existing.get().withSkin(skin);
+        this.registry.put(updated);
+        refresh(player);
+        record(player, updated, ACTION_SET);
+        return true;
+    }
+
+    public void onWorldChange(Player player) {
+        Optional<DisguiseProfile> existing = this.registry.get(player.getUniqueId());
+        if (!existing.isPresent()) {
+            return;
+        }
+        DisguiseProfile current = existing.get();
+        boolean shouldBeActive = this.rules.isActive(player.getWorld().getName());
+        if (shouldBeActive == current.active()) {
+            return;
+        }
+        DisguiseProfile updated = current.withActive(shouldBeActive);
+        this.registry.put(updated);
+        player.setDisplayName(shouldBeActive
+                ? updated.styledName()
+                : updated.originalDisplayName());
+        refresh(player);
+    }
+
+    public void unload(Player player) {
+        this.registry.remove(player.getUniqueId());
+    }
+
+    public void shutdown() {
+        for (DisguiseProfile profile : this.registry.all()) {
+            Player player = this.plugin.getServer().getPlayer(profile.realUuid());
+            if (player != null) {
+                player.setDisplayName(profile.originalDisplayName());
+            }
+        }
+        this.registry.clear();
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  Internals                                                         */
+    /* ------------------------------------------------------------------ */
+
+    private DisguiseProfile install(Player player,
+                                    String nick,
+                                    Rank rank,
+                                    SkinData skin,
+                                    boolean refreshNow) {
+        Optional<DisguiseProfile> previous = this.registry.get(player.getUniqueId());
+
+        String original = previous.isPresent()
+                ? previous.get().originalDisplayName()
+                : player.getDisplayName();
+        boolean active = this.rules.isActive(player.getWorld().getName());
+
+        DisguiseProfile profile = new DisguiseProfile(
+                player.getUniqueId(),
+                player.getName(),
+                nick,
+                rank,
+                skin,
+                this.bedwars.rollStars(),
+                active,
+                original);
+
+        this.registry.put(profile);
+        player.setDisplayName(active ? profile.styledName() : original);
+
+        if (refreshNow) {
+            refresh(player);
+        }
+        return profile;
+    }
+
+    private void refresh(final Player target) {
+        if (target == null || !target.isOnline()) {
+            return;
+        }
+        // Defer by one tick so the plugin has time to settle and the
+        // tab-list entry exists before we overwrite it.
+        this.plugin.getServer().getScheduler().runTaskLater(this.plugin,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!target.isOnline()) {
+                            return;
+                        }
+                        packets.resendOwnEntry(target);
+                    }
+                }, 1L);
+    }
+
+    private void record(Player player, DisguiseProfile profile, String action) {
+        InetSocketAddress address = player.getAddress();
+        String ip = (address == null || address.getAddress() == null)
+                ? "unknown"
+                : address.getAddress().getHostAddress();
+
+        NickRecord row = new NickRecord(
+                profile.realUuid(),
+                profile.realName(),
+                profile.nickname(),
+                profile.rank().name(),
+                profile.skin().sourceKey(),
+                profile.skin().value(),
+                profile.skin().signature(),
+                action,
+                System.currentTimeMillis(),
+                ip);
+
+        this.storage.insert(row).whenComplete(new BiConsumer<Void, Throwable>() {
+            @Override
+            public void accept(Void ignored, Throwable error) {
+                if (error != null) {
+                    plugin.getLogger().log(Level.SEVERE,
+                            "Failed to persist nick action", error);
+                }
+            }
+        });
+    }
+}
+'''
 
 
-def find_bookgui():
-    for candidate in [
-        os.path.join(ROOT, "src", "main", "java", "com", "yourname",
-                     "nick", "gui", "BookGUIManager.java"),
-        os.path.join(ROOT, "com", "yourname", "nick", "gui", "BookGUIManager.java"),
-    ]:
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+# ===========================================================================
+#  3. messages.yml on disk + embedded default
+# ===========================================================================
+
+CLEAN_ACTIONBAR = 'actionbar: "&c&lYou are currently NICKED"'
 
 
-def rewrite_virtualbook():
-    path = find_virtualbook()
-    if path is None:
-        print("[fixer] VirtualBook.java not found - skipping")
-        return
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(VIRTUALBOOK_JAVA)
-    print("[fixer] rewrote VirtualBook.java")
-
-
-def patch_bookgui_manager():
-    path = find_bookgui()
-    if path is None:
-        print("[fixer] BookGUIManager.java not found - skipping")
-        return
-    with open(path, "r", encoding="utf-8") as fh:
-        src = fh.read()
-
-    # The old openBook just calls VirtualBook.open(player, book). Now we
-    # also need to pass the rich pages so clicks work.
-    old = (
-        "    private void openBook(Player player, BaseComponent[] page) {\n"
-        "        VirtualBook.open(player,\n"
-        "                VirtualBook.buildComponents(BOOK_TITLE, BOOK_AUTHOR, page));\n"
-        "    }"
-    )
-    new = (
-        "    private void openBook(Player player, BaseComponent[] page) {\n"
-        "        org.bukkit.inventory.ItemStack book =\n"
-        "                VirtualBook.buildComponents(BOOK_TITLE, BOOK_AUTHOR, page);\n"
-        "        VirtualBook.open(player, book, page);\n"
-        "    }"
-    )
-    if old in src:
-        src = src.replace(old, new)
+def clean_messages_yml():
+    candidates = [
+        os.path.join(ROOT, "messages.yml"),
+        os.path.join(ROOT, "src", "main", "resources", "messages.yml"),
+    ]
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8") as fh:
+            src = fh.read()
+        src = re.sub(r'actionbar:\s*".*?"', CLEAN_ACTIONBAR, src, count=1)
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(src)
-        print("[fixer] patched BookGUIManager.openBook to pass rich pages")
-    else:
-        # Fall back to a looser regex in case whitespace differs.
-        import re
-        pattern = re.compile(
-            r"private\s+void\s+openBook\s*\(Player\s+player\s*,\s*BaseComponent\[\]\s+page\)\s*\{.*?\n\s*\}",
-            re.DOTALL,
-        )
-        def repl(match):
-            return (
-                "private void openBook(Player player, BaseComponent[] page) {\n"
-                "        org.bukkit.inventory.ItemStack book =\n"
-                "                VirtualBook.buildComponents(BOOK_TITLE, BOOK_AUTHOR, page);\n"
-                "        VirtualBook.open(player, book, page);\n"
-                "    }"
-            )
-        new_src, count = pattern.subn(repl, src)
-        if count > 0:
-            with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(new_src)
-            print("[fixer] patched BookGUIManager.openBook (regex)")
-        else:
-            print("[fixer] WARNING: could not find openBook() in BookGUIManager")
+        print("[fixer] cleaned actionbar in " + os.path.relpath(path, ROOT))
+
+
+# ===========================================================================
+#  Driver
+# ===========================================================================
+
+def find(rel):
+    for base in (os.path.join(ROOT, "src", "main", "java"),
+                 os.path.join(ROOT)):
+        candidate = os.path.join(base, rel)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def write_java(rel, content, label):
+    path = find(rel)
+    if path is None:
+        print("[fixer] WARNING: " + label + " not found")
+        return
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(content)
+    print("[fixer] rewrote " + os.path.relpath(path, ROOT))
 
 
 def main():
     print("=" * 60)
-    print(" NickSystem - clickable book fix")
+    print(" NickSystem - real packet + actionbar fix")
     print("=" * 60)
-    rewrite_virtualbook()
-    patch_bookgui_manager()
+
+    write_java(
+        os.path.join("com", "yourname", "nick", "packet", "PacketManager.java"),
+        PACKETMANAGER_JAVA,
+        "PacketManager.java",
+    )
+    write_java(
+        os.path.join("com", "yourname", "nick", "disguise", "DisguiseManager.java"),
+        DISGUISEMANAGER_JAVA,
+        "DisguiseManager.java",
+    )
+    clean_messages_yml()
+
     print("=" * 60)
-    print("[fixer] DONE. Now run:")
+    print("[fixer] DONE")
     print("[fixer]   git add -A")
-    print("[fixer]   git commit -m 'fix: clickable book pages via NMS'")
+    print("[fixer]   git commit -m 'fix: real packet-based nick refresh'")
     print("[fixer]   git push")
     print("=" * 60)
 
